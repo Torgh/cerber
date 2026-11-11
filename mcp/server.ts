@@ -239,7 +239,7 @@ async function renderFile(data: Uint8Array, mime: string, pages?: number[]): Pro
 
 function pageContent(r: Awaited<ReturnType<typeof renderFile>>): Content[] {
   const out: Content[] = [];
-  const hasText = r.textLayer.some((t) => t.length > 40);
+  const hasText = r.textLayer.some((t) => t.replace(/\s/g, "").length >= 10);
   if (hasText) out.push({ type: "text", text: `Warstwa tekstowa:\n${r.textLayer.map((t, i) => `--- strona ${i + 1} ---\n${t}`).join("\n")}` });
   for (const img of r.images) {
     out.push({ type: "text", text: `--- obraz strony ${img.page}/${r.total} ---` });

@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run for the previous push. Runs on main always finish,
+# so every merged commit is checked even when two merges land a few seconds apart.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The checks are shared with TripDeck and DiveDeck, so the apps' CI can't drift apart. They come from
+# TripDeck's main branch, not a pinned commit: it is our own repository, and a pin would leave this
+# repo on an old copy (Dependabot only moves pins that follow version tags).
+jobs:
+  app:
+    name: App
+    uses: Torgh/tripdeck/.github/workflows/bun-app.yml@main
