@@ -110,6 +110,7 @@ function DeadlineRules({ app }: { app: AppState }) {
       <p className="muted" style={{ marginTop: 4 }}>
         Ile dni spółdzielnia ma na odpowiedź w danej kategorii spraw. Nowe pisma dostaną ten termin same. Gdzie regulamin nic nie mówi – zostaw puste i ustawiaj termin ręcznie przy piśmie.
       </p>
+      <div className="table-wrap">
       <table className="rules-table">
         <thead>
           <tr>
@@ -160,6 +161,7 @@ function DeadlineRules({ app }: { app: AppState }) {
           })}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -193,7 +195,7 @@ export default function RulesView({ app }: { app: AppState }) {
           </div>
         )}
         <DeadlineRules app={app} />
-        <div className="section-title">Dokumenty</div>
+        <h2 className="label" style={{ margin: "8px 0 0" }}>Dokumenty</h2>
         {!docs.length && <p className="muted">Nie wczytano jeszcze żadnego dokumentu. Zacznij od statutu spółdzielni.</p>}
         {docs.map((d) => (
           <div key={d.id} className="card" style={d.supersededBy ? { opacity: 0.6 } : undefined}>

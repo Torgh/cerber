@@ -6,7 +6,9 @@ import { demo, loadState } from "./api";
 import CaseList from "./CaseList";
 import CaseView from "./CaseView";
 import { CaseForm } from "./forms";
+import { Auto, Book, List, Moon, Shield, Sun } from "./icons";
 import RulesView from "./RulesView";
+import { useTheme } from "./useTheme";
 
 export interface AppState {
   db: Db;
@@ -14,21 +16,12 @@ export interface AppState {
   reload: () => Promise<void>;
 }
 
-function Logo() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden>
-      <path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5l-8-3Z" />
-      <circle cx="8.5" cy="10" r="1" fill="currentColor" />
-      <circle cx="12" cy="9" r="1" fill="currentColor" />
-      <circle cx="15.5" cy="10" r="1" fill="currentColor" />
-    </svg>
-  );
-}
-
 function hashCase(): number | null {
   const m = /^#sprawa-(\d+)$/.exec(window.location.hash);
   return m ? Number(m[1]) : null;
 }
+
+const THEME_LABEL = { system: "Motyw: jak w systemie", light: "Motyw: jasny", dark: "Motyw: ciemny" } as const;
 
 export default function App() {
   const [state, setState] = useState<{ db: Db; today: string } | null>(null);
@@ -36,8 +29,8 @@ export default function App() {
   const [tab, setTab] = useState<"cases" | "rules">("cases");
   const [selected, setSelected] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
-
   const [demoBusy, setDemoBusy] = useState(false);
+  const [theme, cycleTheme] = useTheme();
 
   const reload = useCallback(async () => {
     try {
@@ -85,21 +78,7 @@ export default function App() {
     setSelected(id);
   };
 
-  const counts = useMemo(() => {
-    if (!state) return { overdue: 0, soon: 0, analyze: 0 };
-    let overdue = 0;
-    let soon = 0;
-    let analyze = 0;
-    for (const c of state.db.cases) {
-      const s = caseStatus(c, state.today);
-      if (s.flags.includes("overdue") || s.flags.includes("my-overdue")) overdue++;
-      else if (s.flags.includes("soon") || s.flags.includes("my-soon")) soon++;
-      if (s.flags.includes("to-analyze")) analyze++;
-    }
-    return { overdue, soon, analyze };
-  }, [state]);
-
-  const sorted = useMemo(() => {
+  const rows = useMemo(() => {
     if (!state) return [];
     return state.db.cases
       .map((c) => ({ c, s: caseStatus(c, state.today) }))
@@ -123,43 +102,41 @@ export default function App() {
 
   if (!state) return <div className="empty">{error ? <p className="error">{error}</p> : "Ładowanie…"}</div>;
   const app: AppState = { ...state, reload };
-  const hasDemo = state.db.cases.some((c) => c.demo) || state.db.rules.some((r) => r.demo);
   const current = state.db.cases.find((c) => c.id === selected);
+  const hasDemo = state.db.cases.some((c) => c.demo) || state.db.rules.some((r) => r.demo);
+  const overdue = rows.filter((r) => r.s.flags.includes("overdue") || r.s.flags.includes("my-overdue")).length;
 
   return (
     <div className="shell">
-      <header className="topbar">
-        <div className="brand">
-          <Logo /> Cerber
-        </div>
-        <nav className="tabs" role="tablist">
-          <button className="tab" role="tab" aria-selected={tab === "cases"} onClick={() => setTab("cases")}>
-            Sprawy
-          </button>
-          <button className="tab" role="tab" aria-selected={tab === "rules"} onClick={() => setTab("rules")}>
-            Regulaminy {state.db.rules.length ? `(${state.db.rules.filter((r) => !r.supersededBy).length})` : ""}
-          </button>
-        </nav>
-        <div className="counters">
-          {counts.overdue > 0 && <span className="chip danger">⚠ {counts.overdue} po terminie</span>}
-          {counts.soon > 0 && <span className="chip warn">⏳ {counts.soon} w ciągu 7 dni</span>}
-          {counts.analyze > 0 && <span className="chip ai">📥 {counts.analyze} do analizy</span>}
-        </div>
-        {hasDemo ? (
-          <button className="btn small demo-btn" disabled={demoBusy} onClick={() => runDemo(false)} title="Usuwa tylko dane demo">
-            🧹 Usuń demo
-          </button>
-        ) : (
-          <button className="btn small demo-btn" disabled={demoBusy} onClick={() => runDemo(true)} title="Przykładowe sprawy, regulamin i skan do analizy">
-            {demoBusy ? "Wczytywanie…" : "🧪 Wczytaj demo"}
-          </button>
-        )}
-      </header>
-      {error && <div className="error">{error}</div>}
+      <nav className="rail" aria-label="Główna">
+        <span className="logo" title="Cerber">
+          <Shield size={28} />
+        </span>
+        <button className="rail-btn" aria-label="Sprawy" title="Sprawy" aria-current={tab === "cases" ? "page" : undefined} onClick={() => setTab("cases")}>
+          <List />
+          {overdue > 0 && <span className="badge">{overdue}</span>}
+        </button>
+        <button className="rail-btn" aria-label="Regulaminy" title="Regulaminy" aria-current={tab === "rules" ? "page" : undefined} onClick={() => setTab("rules")}>
+          <Book />
+        </button>
+        <span className="spacer" />
+        <button className="rail-btn" aria-label={THEME_LABEL[theme]} title={THEME_LABEL[theme]} onClick={cycleTheme}>
+          {theme === "light" ? <Sun /> : theme === "dark" ? <Moon /> : <Auto />}
+        </button>
+      </nav>
+
       {tab === "cases" ? (
         <div className={`main${current ? " has-case" : ""}`}>
-          <CaseList rows={sorted} selected={selected} onSelect={select} onNew={() => setCreating(true)} />
+          <CaseList
+            rows={rows}
+            today={state.today}
+            selected={selected}
+            onSelect={select}
+            onNew={() => setCreating(true)}
+            demo={{ has: hasDemo, busy: demoBusy, run: runDemo }}
+          />
           <section className="detail">
+            {error && <div className="error">{error}</div>}
             {current ? (
               <CaseView key={current.id} app={app} c={current} onBack={() => select(null)} />
             ) : (
@@ -168,11 +145,11 @@ export default function App() {
                   <p>{state.db.cases.length ? "Wybierz sprawę z listy albo dodaj nową." : "Nie ma jeszcze żadnych spraw."}</p>
                   <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
                     <button className="btn primary" onClick={() => setCreating(true)}>
-                      + Nowa sprawa
+                      Nowa sprawa
                     </button>
                     {!hasDemo && (
                       <button className="btn" disabled={demoBusy} onClick={() => runDemo(true)}>
-                        🧪 Wczytaj dane demo
+                        Wczytaj dane demo
                       </button>
                     )}
                   </div>
@@ -182,7 +159,7 @@ export default function App() {
           </section>
         </div>
       ) : (
-        <div className="main">
+        <div className="main single">
           <RulesView app={app} />
         </div>
       )}
