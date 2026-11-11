@@ -1,0 +1,42 @@
+{
+  "name": "cerber",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cerber – pilnuje spraw zgłaszanych do spółdzielni mieszkaniowej: oś czasu, terminy odpowiedzi, regulaminy i analiza skanów przez Claude (MCP).",
+  "license": "AGPL-3.0-or-later",
+  "scripts": {
+    "dev": "next dev -H 127.0.0.1 -p 3200",
+    "build": "next build",
+    "start": "next start -H 127.0.0.1 -p 3200",
+    "mcp": "bun mcp/server.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "check": "bun run typecheck && bun run lint && bun run test && bun run build"
+  },
+  "engines": {
+    "node": ">=20.9"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@napi-rs/canvas": "^1.1.0",
+    "nanoid": "^6.0.2",
+    "next": "^16.4.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "server-only": "^0.0.1",
+    "sharp": "^0.35.5",
+    "unpdf": "^2.1.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "eslint": "^10",
+    "eslint-config-next": "16.4.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vitest": "^5.0.5"
+  }
+}

@@ -1,0 +1,25 @@
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Your cases, scans and personal data live outside the repo (~/.cerber); never commit them.
+.cerber/
+data/
+*.pdf
+*.jpg
+*.jpeg
+*.png
+!docs/*.png
+
+# secrets
+.env*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
