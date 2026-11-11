@@ -1,3 +1,5 @@
+<img src="public/icon.svg" width="96" alt="" align="right">
+
 # Cerber
 
 **Cerber pilnuje spraw, które zgłaszasz jako lokator do spółdzielni mieszkaniowej.** Każda sprawa ma oś czasu

@@ -6,7 +6,7 @@ import { demo, loadState } from "./api";
 import CaseList from "./CaseList";
 import CaseView from "./CaseView";
 import { CaseForm } from "./forms";
-import { Auto, Book, List, Moon, Shield, Sun } from "./icons";
+import { Auto, Book, List, Moon, Sun } from "./icons";
 import RulesView from "./RulesView";
 import { useTheme } from "./useTheme";
 
@@ -109,9 +109,8 @@ export default function App() {
   return (
     <div className="shell">
       <nav className="rail" aria-label="Główna">
-        <span className="logo" title="Cerber">
-          <Shield size={28} />
-        </span>
+        {/* eslint-disable-next-line @next/next/no-img-element -- a static SVG, nothing to optimise */}
+        <img className="logo" src="/icon-small.svg" width={34} height={34} alt="Cerber" />
         <button className="rail-btn" aria-label="Sprawy" title="Sprawy" aria-current={tab === "cases" ? "page" : undefined} onClick={() => setTab("cases")}>
           <List />
           {overdue > 0 && <span className="badge">{overdue}</span>}
