@@ -91,6 +91,7 @@ export default function CaseList({
               </div>
               <div className="meta">
                 <span className="chip">{STAGE_LABEL[c.stage]}</span>
+                {c.demo && <span className="chip">demo</span>}
                 <StatusChips c={c} s={s} />
               </div>
               <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>

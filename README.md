@@ -28,6 +28,17 @@ reply deadlines from the cooperative's own rules, overdue flags, and scan analys
   ocenianych według nich.
 - **Projekty pism** – Claude przygotowuje ponaglenia i odwołania, Ty je wysyłasz.
 
+## Demo
+
+Przycisk **🧪 Wczytaj demo** (w górnym pasku albo na pustej liście) dodaje fikcyjną spółdzielnię: regulamin
+usterek, wyciąg ze statutu, reguły terminów i sześć spraw na każdym etapie. Daty liczone są od dzisiaj, więc
+zawsze jest sprawa po terminie (z projektem ponaglenia), sprawa z terminem za kilka dni, sprawa bez terminu,
+eskalacja do Rady Nadzorczej z gotową analizą i sprawa zamknięta. Sprawa z domofonem ma wygenerowany skan
+odpowiedzi spółdzielni do przetestowania analizy przez MCP („przeanalizuj odpowiedź w sprawie #5”). Skan
+powołuje się na nieistniejący § 9, więc Claude powinien to wyłapać.
+
+**🧹 Usuń demo** usuwa tylko dane demo, czyli sprawy, regulaminy, reguły terminów i skan. Twoje sprawy zostają.
+
 ## Dane i prywatność
 
 Wszystko jest lokalnie, w jednym pliku JSON: `~/.cerber/cerber.json` (sprawy, regulaminy, terminy), skany

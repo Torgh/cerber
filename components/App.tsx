@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { caseRank, caseStatus } from "@/lib/status";
 import type { Db } from "@/lib/types";
-import { loadState } from "./api";
+import { demo, loadState } from "./api";
 import CaseList from "./CaseList";
 import CaseView from "./CaseView";
 import { CaseForm } from "./forms";
@@ -36,6 +36,8 @@ export default function App() {
   const [tab, setTab] = useState<"cases" | "rules">("cases");
   const [selected, setSelected] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
+
+  const [demoBusy, setDemoBusy] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -104,8 +106,24 @@ export default function App() {
       .sort((a, b) => caseRank(a.c, a.s) - caseRank(b.c, b.s) || (a.s.next?.left ?? 1e9) - (b.s.next?.left ?? 1e9) || b.c.id - a.c.id);
   }, [state]);
 
+  const runDemo = async (load: boolean) => {
+    if (!load && !confirm("Usunąć dane demo? Twoje własne sprawy i regulaminy zostaną.")) return;
+    setDemoBusy(true);
+    try {
+      const r = await demo(load);
+      await reload();
+      setTab("cases");
+      select(load ? (r.first ?? null) : null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDemoBusy(false);
+    }
+  };
+
   if (!state) return <div className="empty">{error ? <p className="error">{error}</p> : "Ładowanie…"}</div>;
   const app: AppState = { ...state, reload };
+  const hasDemo = state.db.cases.some((c) => c.demo) || state.db.rules.some((r) => r.demo);
   const current = state.db.cases.find((c) => c.id === selected);
 
   return (
@@ -127,6 +145,15 @@ export default function App() {
           {counts.soon > 0 && <span className="chip warn">⏳ {counts.soon} w ciągu 7 dni</span>}
           {counts.analyze > 0 && <span className="chip ai">📥 {counts.analyze} do analizy</span>}
         </div>
+        {hasDemo ? (
+          <button className="btn small demo-btn" disabled={demoBusy} onClick={() => runDemo(false)} title="Usuwa tylko dane demo">
+            🧹 Usuń demo
+          </button>
+        ) : (
+          <button className="btn small demo-btn" disabled={demoBusy} onClick={() => runDemo(true)} title="Przykładowe sprawy, regulamin i skan do analizy">
+            {demoBusy ? "Wczytywanie…" : "🧪 Wczytaj demo"}
+          </button>
+        )}
       </header>
       {error && <div className="error">{error}</div>}
       {tab === "cases" ? (
@@ -138,10 +165,17 @@ export default function App() {
             ) : (
               <div className="empty">
                 <div>
-                  <p>Wybierz sprawę z listy albo dodaj nową.</p>
-                  <button className="btn primary" onClick={() => setCreating(true)}>
-                    + Nowa sprawa
-                  </button>
+                  <p>{state.db.cases.length ? "Wybierz sprawę z listy albo dodaj nową." : "Nie ma jeszcze żadnych spraw."}</p>
+                  <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+                    <button className="btn primary" onClick={() => setCreating(true)}>
+                      + Nowa sprawa
+                    </button>
+                    {!hasDemo && (
+                      <button className="btn" disabled={demoBusy} onClick={() => runDemo(true)}>
+                        🧪 Wczytaj dane demo
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             )}

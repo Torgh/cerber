@@ -101,6 +101,10 @@ a {
   font-weight: 600;
 }
 
+.demo-btn {
+  flex: 0 0 auto;
+}
+
 .counters {
   margin-left: auto;
   display: flex;

@@ -27,3 +27,7 @@ export async function loadState(since?: string): Promise<{ db: Db; today: string
 }
 
 export const fileUrl = (id: string) => `/api/files/${id}`;
+
+export async function demo(load: boolean): Promise<{ first?: number }> {
+  return parse(await fetch("/api/demo", { method: load ? "POST" : "DELETE" }));
+}

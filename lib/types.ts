@@ -167,6 +167,8 @@ export interface Case {
   events: CaseEvent[];
   deadlines: Deadline[];
   drafts: Draft[];
+  /** Example data (Demo button); removed together by "Usuń demo". */
+  demo?: boolean;
 }
 
 export type RulesKind = "statute" | "rules" | "law" | "other";
@@ -195,6 +197,7 @@ export interface RulesDoc {
   importedAt: string;
   file?: FileRef;
   sections: RulesSection[];
+  demo?: boolean;
 }
 
 /** "Rules say the cooperative answers a defect report within 14 days" – used to fill in new deadlines. */
@@ -202,6 +205,7 @@ export interface DeadlineRule {
   category: Category;
   days: number;
   source: string;
+  demo?: boolean;
 }
 
 export interface Db {
