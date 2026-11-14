@@ -1073,3 +1073,70 @@ table.rules-table th {
   font-size: 12px;
   color: var(--muted);
 }
+
+/* Zestawienie: statistics tiles and tables, people. */
+.stat-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.stat-tile {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.stat-tile .n {
+  font-size: 26px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-tile .muted {
+  font-size: 13px;
+}
+
+table.stats {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+table.stats th,
+table.stats td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+table.stats th {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+table.stats td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.card.person {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.card.person:hover {
+  border-color: var(--muted);
+}
+
+a.chip {
+  text-decoration: none;
+}

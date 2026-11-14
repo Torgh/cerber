@@ -19,6 +19,12 @@ export const List = (p: P) => (
     <path d="M4 6h16M4 12h16M4 18h10" />
   </Svg>
 );
+export const Chart = (p: P) => (
+  <Svg {...p}>
+    <path d="M4 20V4M4 20h16" />
+    <path d="M8 16v-4M12 16V8M16 16v-6" />
+  </Svg>
+);
 export const Book = (p: P) => (
   <Svg {...p}>
     <path d="M6 3h9l3 3v15H6z" />

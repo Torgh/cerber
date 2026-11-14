@@ -12,15 +12,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { formatDate, plDays, today } from "../lib/dates";
-import { caseLine, caseText } from "../lib/format";
+import { caseLine, caseText, personText } from "../lib/format";
 import * as ops from "../lib/ops";
+import { reportMarkdown } from "../lib/report";
 import { searchRules } from "../lib/rules";
+import { stats } from "../lib/stats";
 import { mutate, readDb, dataDir } from "../lib/server/db";
 import { deleteStored, mimeOf, readStored, storeFromPath } from "../lib/server/files";
 import { parseMsg, msgText } from "../lib/server/msg";
 import { imageForClaude, pdfPageImages, pdfText, type PageImage } from "../lib/server/pdf";
-import { caseRank, caseStatus } from "../lib/status";
-import { CATEGORIES, CATEGORY_LABEL, EVENT_KINDS, RULES_KIND_LABEL, type FileRef } from "../lib/types";
+import { caseRank, caseStatus, promiseMoves } from "../lib/status";
+import { CATEGORIES, CATEGORY_LABEL, EVENT_KINDS, ROLE_LABEL, RULES_KIND_LABEL, SIGNER_LABEL, type FileRef } from "../lib/types";
 
 const INSTRUCTIONS = `Cerber pilnuje spraw, które użytkownik (lokator) zgłasza do swojej spółdzielni mieszkaniowej.
 Każda sprawa ma etap (szkic → czeka na odpowiedź → odpowiedź → eskalacja → zamknięta), oś czasu zdarzeń
@@ -46,6 +48,17 @@ Jak pracować:
   get_overview pokaże je osobno – zaproponuj ponaglenie o brakujące punkty albo zapytaj, czy zamknąć sprawę.
 - E-maile Outlooka (.msg) read_document czyta same: nagłówki (od, do, DW, data wysłania), treść i załączniki.
   Datę zdarzenia sprawdzaj z nagłówka „Data”.
+- Daty pisma: date to data złożenia / doręczenia (od niej liczy się termin) albo otrzymania odpowiedzi. Data na piśmie
+  spółdzielni („pismo z 11.09”) to letter_date; data, którą spółdzielnia nadała pismu użytkownika („Pana pismo z 08.09”),
+  to registered_date; datę niepewną oznacz date_approx. Nie zgaduj dat.
+- Obietnice: gdy spółdzielnia znów przesuwa to samo („ankieta do końca roku” po „ankieta w sierpniu”), w save_analysis
+  podaj commitments.replaces = id starego terminu – historia przesunięć to argument w skardze.
+- Forma odpowiedzi (save_analysis formal): kto podpisał (organ: Zarząd / Rada Nadzorcza, czy administracja), czy jest
+  uzasadnienie i pouczenie o odwołaniu. Tylko to, co widać na piśmie.
+- Osoby: jeśli pisma wysyła pełnomocnik, a nie członek, zapisz osoby (save_person) i nadawcę pisma (sender_id).
+  Gdy regulamin wymaga wniosku członka, zwróć na to uwagę.
+- Jedno pismo w kilku sprawach: share_event (albo link_events dla dodanych dwa razy), link_cases dla spraw powiązanych.
+- Skarga do Rady Nadzorczej / prawnik: export_case daje chronologię sprawy, get_stats – jak spółdzielnia odpowiada.
 - Regulaminy: import_rules wczytuje PDF/TXT z warstwą tekstową. Skan bez tekstu: przeczytaj go read_scan i przekaż
   tekst do import_rules. Terminy, które regulamin daje spółdzielni dla danej kategorii spraw, zapisz set_deadline_rule.
 - Odpowiadaj po polsku, zwięźle. Nie jesteś prawnikiem: przy sporze o pieniądze lub prawa do lokalu zasugeruj
@@ -88,6 +101,23 @@ const deadlineInput = z
   })
   .describe("Termin odpowiedzi spółdzielni");
 
+/** Dates and sender of a letter, for add_event / send_draft. */
+const letterFields = {
+  letter_date: date.optional().describe("Data na piśmie, gdy inna niż data zdarzenia (np. pismo z 11.09 otrzymane 17.09)"),
+  registered_date: date.optional().describe("Pismo użytkownika: data, którą nadała mu spółdzielnia (rejestracja), gdy inna niż jego"),
+  date_approx: z.boolean().optional().describe("Data niepewna, np. pisma brak, a datę znamy z odpowiedzi"),
+  sender_id: z.string().optional().describe("Pismo użytkownika: kto je wysłał (id osoby z get_people)"),
+};
+
+function letterInput(a: { letter_date?: string; registered_date?: string; date_approx?: boolean; sender_id?: string }) {
+  return { letterDate: a.letter_date, registeredDate: a.registered_date, dateApprox: a.date_approx, senderId: a.sender_id };
+}
+
+/** Deletes stored files that nothing uses any more (after a letter was linked or removed). */
+async function dropFiles(files: FileRef[]) {
+  for (const f of files) await deleteStored(f);
+}
+
 async function storePaths(paths: string[] | undefined): Promise<FileRef[]> {
   const out: FileRef[] = [];
   for (const p of paths ?? []) out.push(await storeFromPath(p));
@@ -113,6 +143,14 @@ tool("get_overview", "Przegląd: sprawy po terminie, zbliżające się terminy, 
   group("⏳ Terminy w ciągu 7 dni", (s) => s.flags.includes("soon") || s.flags.includes("my-soon"));
   const rest = rows.filter((r) => !r.s.flags.length);
   if (rest.length) lines.push("## Pozostałe", ...rest.map((r) => `- ${caseLine(r.c, t)}`), "");
+  const st = stats(db, t).total;
+  if (st.letters)
+    lines.push(
+      `Odpowiedzi spółdzielni: ${st.onTime}/${st.answered} w terminie${st.medianDays !== undefined ? `, mediana ${plDays(st.medianDays)}` : ""}${st.pendingLate ? `, ${st.pendingLate} pism bez odpowiedzi po terminie` : ""} (szczegóły: get_stats).`,
+    );
+  lines.push(
+    `Osoby: ${db.people.map((p) => `${personText(db, p)} [${p.id}]`).join("; ") || "brak – gdy pisma wysyła pełnomocnik albo ktoś inny niż członek, dodaj osoby save_person"}.`,
+  );
   lines.push(
     `Regulaminy: ${db.rules.filter((r) => !r.supersededBy).map((r) => r.title).join(", ") || "brak – poproś użytkownika o statut i regulaminy (import_rules)"}.`,
     `Reguły terminów: ${db.deadlineRules.map((r) => `${CATEGORY_LABEL[r.category]} ${plDays(r.days)} (${r.source})`).join("; ") || "brak"}.`,
@@ -130,7 +168,7 @@ tool("list_cases", "Lista spraw z etapem i najbliższym terminem.", { include_cl
 
 tool("get_case", "Cała sprawa: opis, oś czasu (z id zdarzeń i plików), analizy, terminy, projekty pism.", { case_id: z.number().int() }, async ({ case_id }) => {
   const db = await readDb();
-  return text(caseText(ops.getCase(db, case_id), today()));
+  return text(caseText(ops.getCase(db, case_id), today(), db));
 });
 
 tool(
@@ -171,16 +209,18 @@ tool(
     description: z.string().optional().describe("Treść / streszczenie"),
     method: z.enum(["in_person", "registered", "email", "epuap", "mailbox", "other"]).optional(),
     reference: z.string().optional().describe("Sygnatura / L.dz. pisma"),
-    files: z.array(z.string()).optional().describe("Pełne ścieżki plików na dysku użytkownika (skany, PDF, zdjęcia)"),
+    ...letterFields,
+    files: z.array(z.string()).optional().describe("Pełne ścieżki plików na dysku użytkownika (skany, PDF, zdjęcia, e-maile .msg)"),
     reply_deadline: deadlineInput.optional(),
     no_deadline: z.boolean().optional().describe("true: pismo bez terminu odpowiedzi (nie używaj reguły kategorii)"),
   },
-  async ({ case_id, files, reply_deadline, no_deadline, ...rest }) => {
+  async ({ case_id, files, reply_deadline, no_deadline, letter_date, registered_date, date_approx, sender_id, ...rest }) => {
     const refs = await storePaths(files);
     try {
       const { event, deadline } = await mutate((db) =>
         ops.addEvent(db, case_id, {
           ...(rest as Omit<ops.EventInput, "files" | "replyDeadline">),
+          ...letterInput({ letter_date, registered_date, date_approx, sender_id }),
           files: refs,
           replyDeadline: no_deadline ? null : (reply_deadline as ops.DeadlineInput | undefined),
         }),
@@ -201,7 +241,7 @@ tool(
 
 tool(
   "update_event",
-  "Poprawia zdarzenie (data, tytuł, opis, sposób, sygnatura).",
+  "Poprawia zdarzenie (data, tytuł, opis, sposób, sygnatura, daty pisma, nadawca). Pismo połączone z innymi sprawami zmienia się we wszystkich. Pusty tekst (\"\") czyści pole.",
   {
     case_id: z.number().int(),
     event_id: z.string(),
@@ -210,10 +250,65 @@ tool(
     description: z.string().optional(),
     method: z.enum(["in_person", "registered", "email", "epuap", "mailbox", "other"]).optional(),
     reference: z.string().optional(),
+    letter_date: z.union([date, z.literal("")]).optional().describe("Data na piśmie, gdy inna niż data zdarzenia"),
+    registered_date: z.union([date, z.literal("")]).optional().describe("Data, którą spółdzielnia nadała pismu użytkownika"),
+    date_approx: z.boolean().optional(),
+    sender_id: z.string().optional().describe("id osoby; \"\" usuwa nadawcę"),
   },
-  async ({ case_id, event_id, ...patch }) => {
-    const e = await mutate((db) => ops.updateEvent(db, case_id, event_id, patch as ops.EventPatch));
+  async ({ case_id, event_id, letter_date, registered_date, date_approx, sender_id, ...patch }) => {
+    const clear = (v: string | undefined) => (v === undefined ? undefined : v || null);
+    const e = await mutate((db) =>
+      ops.updateEvent(db, case_id, event_id, {
+        ...(patch as ops.EventPatch),
+        letterDate: clear(letter_date),
+        registeredDate: clear(registered_date),
+        dateApprox: date_approx,
+        senderId: clear(sender_id),
+      }),
+    );
     return text(`Zapisano zdarzenie ${e.id}: ${e.date} ${e.title}.`);
+  },
+);
+
+tool(
+  "link_cases",
+  "Oznacza dwie sprawy jako powiązane (dotyczą tego samego, odpowiedzi przychodzą w jednym piśmie) albo je rozłącza.",
+  { case_id: z.number().int(), other_case_id: z.number().int(), unlink: z.boolean().optional() },
+  async ({ case_id, other_case_id, unlink }) => {
+    await mutate((db) => ops.linkCases(db, case_id, other_case_id, unlink));
+    return text(unlink ? `Rozłączono #${case_id} i #${other_case_id}.` : `Powiązano #${case_id} i #${other_case_id}.`);
+  },
+);
+
+tool(
+  "share_event",
+  "To samo pismo dotyczy też innej sprawy (np. jedna odpowiedź spółdzielni na dwie sprawy): dodaje je tam z tymi samymi plikami, połączone. Analizę zapisz osobno w każdej sprawie – pismo odpowiada w nich na inne punkty. W drugiej sprawie pismo zakłada lub spełnia terminy jak add_event.",
+  {
+    case_id: z.number().int(),
+    event_id: z.string(),
+    other_case_id: z.number().int(),
+    reply_deadline: deadlineInput.optional().describe("Pismo użytkownika: termin odpowiedzi w drugiej sprawie (domyślnie reguła kategorii)"),
+    no_deadline: z.boolean().optional(),
+  },
+  async ({ case_id, event_id, other_case_id, reply_deadline, no_deadline }) => {
+    const { event, deadline } = await mutate((db) =>
+      ops.shareEvent(db, case_id, event_id, other_case_id, no_deadline ? null : (reply_deadline as ops.DeadlineInput | undefined)),
+    );
+    const lines = [`Pismo dodane do sprawy #${other_case_id} jako zdarzenie ${event.id} (połączone z ${event_id}).`];
+    if (deadline) lines.push(`Termin odpowiedzi w #${other_case_id}: ${formatDate(deadline.due)} [${deadline.id}].`);
+    if (event.kind === "response" && event.files.length) lines.push(`Przeanalizuj je w kontekście #${other_case_id}: read_document(case_id=${other_case_id}, event_id="${event.id}").`);
+    return text(lines.join("\n"));
+  },
+);
+
+tool(
+  "link_events",
+  "Łączy dwa zdarzenia, które już są tym samym pismem w dwóch sprawach (dodane wcześniej dwa razy). Te same pliki (nazwa i rozmiar) zostają jednym plikiem; duplikaty są usuwane z dysku.",
+  { case_id: z.number().int(), event_id: z.string(), other_case_id: z.number().int(), other_event_id: z.string() },
+  async ({ case_id, event_id, other_case_id, other_event_id }) => {
+    const gone = await mutate((db) => ops.linkEvents(db, case_id, event_id, other_case_id, other_event_id));
+    await dropFiles(gone);
+    return text(`Połączono ${event_id} (#${case_id}) i ${other_event_id} (#${other_case_id}).${gone.length ? ` Usunięte duplikaty plików: ${gone.map((f) => f.name).join(", ")}.` : ""}`);
   },
 );
 
@@ -310,9 +405,9 @@ tool(
     const content: Content[] = [
       {
         type: "text",
-        text: `# Kontekst sprawy\n${caseText(c, today())}\n\n# Analizowany dokument: ${e.title} (${e.date}) [event ${e.id}]\n` +
+        text: `# Kontekst sprawy\n${caseText(c, today(), db)}\n\n# Analizowany dokument: ${e.title} (${e.date}) [event ${e.id}]\n` +
           (e.kind === "response"
-            ? "Sprawdź: na które punkty pism użytkownika odpowiada; czy powołane przepisy istnieją i mówią to samo (search_rules / get_rules); zobowiązania z datami; pouczenia i terminy na odwołanie; następny krok. Zapisz save_analysis."
+            ? "Sprawdź: na które punkty pism użytkownika odpowiada; czy powołane przepisy istnieją i mówią to samo (search_rules / get_rules); zobowiązania z datami (czy to przesunięcie wcześniejszej obietnicy – replaces); kto podpisał, czy jest uzasadnienie i pouczenie o odwołaniu (formal); datę na piśmie, gdy inna niż data otrzymania (update_event letter_date); następny krok. Zapisz save_analysis."
             : "Przeczytaj dokument i zapisz najważniejsze ustalenia save_analysis."),
       },
     ];
@@ -347,21 +442,48 @@ tool(
       .optional()
       .describe("Punkty pisma użytkownika i czy odpowiedź je załatwia"),
     issues: z.array(z.object({ text: z.string(), source: z.string().optional() })).optional().describe("Zastrzeżenia, z paragrafem źródła"),
+    formal: z
+      .object({
+        signer: z.enum(["board", "admin", "council", "other"]).optional().describe(Object.entries(SIGNER_LABEL).map(([k, v]) => `${k} = ${v}`).join("; ")),
+        signed_by: z.string().optional().describe("Podpis jak na piśmie, np. „Kierownik Administracji Osiedla”"),
+        appeal_instruction: z.boolean().optional().describe("Czy jest pouczenie, gdzie i w jakim terminie się odwołać"),
+        justification: z.boolean().optional().describe("Czy odmowa / stanowisko ma uzasadnienie"),
+      })
+      .optional()
+      .describe("Forma odpowiedzi – tylko to, co widać na piśmie; pomiń, czego nie da się ustalić"),
     next_step: z.string().optional(),
-    commitments: z.array(z.object({ label: z.string(), due: date, source: z.string().optional() })).optional().describe("Co spółdzielnia obiecuje i do kiedy"),
+    commitments: z
+      .array(
+        z.object({
+          label: z.string(),
+          due: date,
+          source: z.string().optional(),
+          replaces: z.string().optional().describe("id wcześniejszego terminu tej samej obietnicy – zostanie przesunięty, z historią"),
+        }),
+      )
+      .optional()
+      .describe("Co spółdzielnia obiecuje i do kiedy"),
     my_deadlines: z.array(z.object({ label: z.string(), due: date, source: z.string().optional() })).optional().describe("Terminy użytkownika, np. na odwołanie"),
   },
-  async ({ case_id, event_id, next_step, my_deadlines, ...rest }) => {
-    const { added } = await mutate((db) =>
-      ops.saveAnalysis(db, case_id, event_id, { ...(rest as Omit<ops.AnalysisInput, "nextStep" | "myDeadlines">), nextStep: next_step, myDeadlines: my_deadlines }),
+  async ({ case_id, event_id, next_step, my_deadlines, formal, ...rest }) => {
+    const { added, moved } = await mutate((db) =>
+      ops.saveAnalysis(db, case_id, event_id, {
+        ...(rest as Omit<ops.AnalysisInput, "nextStep" | "myDeadlines" | "formal">),
+        formal: formal && { signer: formal.signer, signedBy: formal.signed_by, appealInstruction: formal.appeal_instruction, justification: formal.justification },
+        nextStep: next_step,
+        myDeadlines: my_deadlines,
+      }),
     );
-    return text(`Zapisano analizę.${added.length ? ` Nowe terminy: ${added.map((d) => `${d.label} – ${formatDate(d.due)}`).join("; ")}.` : ""}`);
+    const parts = ["Zapisano analizę."];
+    if (added.length) parts.push(`Nowe terminy: ${added.map((d) => `${d.label} – ${formatDate(d.due)}`).join("; ")}.`);
+    if (moved.length) parts.push(`Przesunięte obietnice: ${moved.map((d) => `${d.label} – ${promiseMoves(d).dates.map(formatDate).join(" → ")}`).join("; ")}.`);
+    return text(parts.join(" "));
   },
 );
 
 tool(
   "set_deadline",
-  "Dodaje termin (bez deadline_id) albo zmienia istniejący: data, podstawa, spełnienie (done_at), nieaktualny (dropped).",
+  "Dodaje termin (bez deadline_id) albo zmienia istniejący: data, podstawa, spełnienie (done_at), nieaktualny (dropped). Gdy spółdzielnia PRZESUWA obietnicę, podaj nowe due z moved_on – stara data trafi do historii (zwykła zmiana due bez moved_on to poprawka). Wcześniejsze obietnice ze starych pism dopisz earlier.",
   {
     case_id: z.number().int(),
     deadline_id: z.string().optional(),
@@ -377,6 +499,11 @@ tool(
     done_at: date.optional(),
     reopen: z.boolean().optional().describe("Cofnij spełnienie"),
     dropped: z.boolean().optional(),
+    moved_on: date.optional().describe("Data pisma / zdarzenia, w którym spółdzielnia przesunęła termin na nowe due"),
+    earlier: z
+      .array(z.object({ due: date.describe("Wcześniej obiecana data"), moved_on: date.describe("Kiedy ją zastąpiono"), source: z.string().optional() }))
+      .optional()
+      .describe("Wcześniejsze daty tej obietnicy, np. z pism sprzed lat"),
   },
   async (a) => {
     const t = today();
@@ -389,9 +516,12 @@ tool(
           source: a.source,
           doneAt: a.reopen ? null : a.done_at,
           dropped: a.dropped,
+          movedOn: a.moved_on,
+          earlier: a.earlier?.map((m) => ({ due: m.due, movedOn: m.moved_on, source: m.source })),
         }),
       );
-      return text(`Zapisano termin ${d.id}: ${d.label} – ${formatDate(d.due)}.`);
+      const pm = promiseMoves(d);
+      return text(`Zapisano termin ${d.id}: ${d.label} – ${formatDate(d.due)}.${pm.moved ? ` Historia: ${pm.dates.map(formatDate).join(" → ")} (przesuwany ${pm.moved}×, ${pm.broken}× po upływie).` : ""}`);
     }
     if (!a.party || !a.label || !a.basis) throw new Error("Nowy termin wymaga party, label i basis.");
     const d = await mutate((db) =>
@@ -423,16 +553,18 @@ tool(
     description: z.string().optional().describe("Krótkie streszczenie (pełna treść zostaje w projekcie)"),
     method: z.enum(["in_person", "registered", "email", "epuap", "mailbox", "other"]).optional(),
     reference: z.string().optional(),
+    ...letterFields,
     files: z.array(z.string()).optional().describe("Np. skan z pieczątką, potwierdzenie nadania, wysłany mail .msg"),
     reply_deadline: deadlineInput.optional(),
     no_deadline: z.boolean().optional(),
   },
-  async ({ case_id, draft_id, files, reply_deadline, no_deadline, ...rest }) => {
+  async ({ case_id, draft_id, files, reply_deadline, no_deadline, letter_date, registered_date, date_approx, sender_id, ...rest }) => {
     const refs = await storePaths(files);
     try {
       const { event, deadline } = await mutate((db) =>
         ops.sendDraft(db, case_id, draft_id, {
           ...(rest as Omit<ops.EventInput, "files" | "replyDeadline" | "kind">),
+          ...letterInput({ letter_date, registered_date, date_approx, sender_id }),
           kind: rest.kind as ops.EventInput["kind"] | undefined,
           files: refs,
           replyDeadline: no_deadline ? null : (reply_deadline as ops.DeadlineInput | undefined),
@@ -524,6 +656,73 @@ tool(
   async ({ category: cat, days, source }) => {
     await mutate((db) => ops.setDeadlineRule(db, cat as ops.CaseInput["category"], days || null, source));
     return text(days ? `Reguła: ${CATEGORY_LABEL[cat as ops.CaseInput["category"]]} – ${plDays(days)} (${source}).` : "Usunięto regułę.");
+  },
+);
+
+tool("get_people", "Osoby, które piszą do spółdzielni: członek, pełnomocnik (z zakresem pełnomocnictwa), inni.", {}, async () => {
+  const db = await readDb();
+  return text(db.people.map((p) => `- [${p.id}] ${personText(db, p)}${p.note ? ` – ${p.note}` : ""}`).join("\n") || "Brak osób.");
+});
+
+tool(
+  "save_person",
+  "Dodaje osobę (bez person_id) albo ją zmienia; delete=true usuwa. Pełnomocnik: role proxy, proxy_for = id członka, proxy_scope = zakres pełnomocnictwa jak w dokumencie.",
+  {
+    person_id: z.string().optional(),
+    name: z.string().optional(),
+    role: z.enum(["member", "proxy", "other"]).optional().describe(Object.entries(ROLE_LABEL).map(([k, v]) => `${k} = ${v}`).join("; ")),
+    proxy_for: z.string().optional().describe("id członka, którego reprezentuje (\"\" czyści)"),
+    proxy_scope: z.string().optional().describe("Zakres pełnomocnictwa, np. „czynności administracyjne dot. lokalu nr 3”"),
+    note: z.string().optional(),
+    delete: z.boolean().optional(),
+  },
+  async (a) => {
+    if (a.delete) {
+      if (!a.person_id) throw new Error("Podaj person_id.");
+      const p = await mutate((db) => ops.deletePerson(db, a.person_id!));
+      return text(`Usunięto ${p.name}.`);
+    }
+    const p = await mutate((db) =>
+      ops.savePerson(db, {
+        id: a.person_id,
+        name: a.name,
+        role: a.role,
+        proxyFor: a.proxy_for === undefined ? undefined : a.proxy_for || null,
+        proxyScope: a.proxy_scope,
+        note: a.note,
+      }),
+    );
+    const db = await readDb();
+    return text(`Zapisano [${p.id}] ${personText(db, p)}. Nadawcę pisma ustawisz sender_id w add_event / update_event.`);
+  },
+);
+
+tool("get_stats", "Jak spółdzielnia odpowiada: czas odpowiedzi, ile w terminie, po terminie, bez odpowiedzi, niepełne, z brakami formalnymi; według lat i osób prowadzących (inicjały z sygnatury); przesuwane obietnice.", {}, async () => {
+  const db = await readDb();
+  const s = stats(db, today());
+  if (!s.records.length) return text("Brak pism z terminem odpowiedzi.");
+  const line = (x: (typeof s)["total"]) =>
+    `${x.answered}/${x.letters} odpowiedzi, ${x.onTime} w terminie, ${x.late} po terminie` +
+    (x.pending ? `, ${x.pending} czeka (${x.pendingLate} po terminie)` : "") +
+    (x.medianDays !== undefined ? `; mediana ${plDays(x.medianDays)}, średnio ${plDays(x.avgDays!)}` : "") +
+    (x.maxLate ? `; najdłużej ${plDays(x.maxLate.days)} po terminie (#${x.maxLate.caseId}, pismo z ${formatDate(x.maxLate.letterDate)})` : "") +
+    (x.incomplete ? `; niepełne: ${x.incomplete}` : "") +
+    (x.formal ? `; z brakami formalnymi: ${x.formal}` : "");
+  const lines = [`## Razem\n${line(s.total)}`, "", "## Według lat (data mojego pisma)", ...s.byYear.map((y) => `- ${y.year}: ${line(y.s)}`)];
+  if (s.byHandler.length) lines.push("", "## Według sygnatury (inicjały prowadzącego)", ...s.byHandler.map((h) => `- ${h.handler}: ${line(h.s)}`));
+  lines.push("", `## Obietnice spółdzielni\n${s.promises.count} zobowiązań, przesunięcia: ${s.promises.moved}, w tym po upływie terminu: ${s.promises.broken}.`);
+  for (const p of s.promises.items) lines.push(`- #${p.caseId} ${p.label}: ${p.dates.map(formatDate).join(" → ")}`);
+  lines.push("", "## Pisma", ...s.records.map((r) => `- #${r.caseId} ${formatDate(r.letter.date)} ${r.letter.title}: ${r.pending ? (r.late ? `BRAK odpowiedzi, ${plDays(r.late)} po terminie` : "czeka") : `odpowiedź po ${plDays(r.days!)}${r.late ? `, ${plDays(r.late)} po terminie` : ", w terminie"}${r.incomplete ? ", niepełna" : ""}${r.formal.length ? `, ${r.formal.join(", ")}` : ""}`}`));
+  return text(lines.join("\n"));
+});
+
+tool(
+  "export_case",
+  "Zestawienie sprawy do skargi (np. do Rady Nadzorczej) albo dla prawnika: chronologia pism z sygnaturami, terminy i jak się skończyły, przesuwane obietnice, punkty bez odpowiedzi, braki formalne. Markdown; wersja do druku: http://127.0.0.1:3200/api/export/<case_id>.",
+  { case_id: z.number().int() },
+  async ({ case_id }) => {
+    const db = await readDb();
+    return text(reportMarkdown(ops.getCase(db, case_id), db, today()));
   },
 );
 

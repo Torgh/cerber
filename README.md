@@ -17,6 +17,12 @@
 - **Niepełne odpowiedzi i sprawy bez ruchu.** Odpowiedź, która według analizy załatwia mniej niż połowę Twoich punktów, nie odhacza terminu na zielono – widać *½ odpowiedź niepełna*, a sprawa bez dalszych terminów trafia do „Wymaga działania” z propozycją ponaglenia o brakujące punkty. Sprawa z odpowiedzią, bez terminów i bez zdarzeń od 14 dni dostaje flagę *brak następnego kroku*.
 - **Skany i dokumenty.** PDF-y, zdjęcia, e-maile Outlooka (`.msg`) i inne pliki przy każdym zdarzeniu, do otwarcia jednym kliknięciem. Claude czyta z `.msg` nadawcę, adresatów, datę wysłania, treść i załączniki.
 - **Regulaminy.** Statut, regulaminy i ustawy wczytane z PDF-u z warstwą tekstową, z pliku tekstowego albo wklejone – podzielone na paragrafy, z wyszukiwarką odporną na odmianę słów („terminu” znajduje „termin”). Zeskanowany regulamin bez tekstu odczytuje Claude. Nowa wersja dokumentu zastępuje starą, która zostaje dla spraw ocenianych według niej.
+- **Daty pisma.** Oprócz daty złożenia lub otrzymania: data na piśmie spółdzielni („pismo z 11.09”, otrzymane 17.09 – widać, gdy pismo datowane w terminie przyszło po nim), data, którą spółdzielnia nadała Twojemu pismu, i znacznik daty przybliżonej.
+- **Przesuwane obietnice.** Gdy spółdzielnia znów przesuwa to samo („ankieta w lipcu”, „w sierpniu”, „do końca roku”), termin zachowuje historię: ile razy go przesunięto i ile razy dopiero po upływie.
+- **Osoby.** Członek, pełnomocnik (z zakresem pełnomocnictwa) i nadawca każdego pisma – gdy regulamin wymaga wniosku członka, widać, kto naprawdę pisał.
+- **Jedno pismo w kilku sprawach.** Odpowiedź na dwie sprawy dodajesz raz i wskazujesz drugą sprawę: pliki są wspólne, poprawki trafiają do obu, analiza zostaje osobna. Sprawy można też po prostu powiązać.
+- **Forma odpowiedzi.** Analiza zapisuje, kto podpisał pismo (Zarząd czy administracja), czy jest uzasadnienie i pouczenie o odwołaniu.
+- **Zestawienie do skargi.** Przycisk *Zestawienie* w sprawie otwiera chronologię do druku lub PDF: pisma z sygnaturami, terminy i jak się skończyły, przesuwane obietnice, punkty bez odpowiedzi, braki formalne. Zakładka *Zestawienie i osoby* pokazuje, jak spółdzielnia odpowiada: ile w terminie, mediana dni, bez odpowiedzi po terminie – razem, według lat i według inicjałów z sygnatury.
 - **Projekty pism.** Ponaglenia i odwołania przygotowane przez Claude'a leżą w sprawie, gotowe do skopiowania i wydruku. Wysyłasz je sam, a przycisk *Wysłane* dodaje pismo na oś czasu z terminem odpowiedzi. Niewysłany projekt jest widoczny na liście spraw.
 - **Demo.** *Wczytaj demo* dodaje fikcyjną spółdzielnię z regulaminem, wyciągiem ze statutu i sześcioma sprawami na każdym etapie, z datami liczonymi od dziś – jedna po terminie z gotowym ponagleniem, jedna z terminem za kilka dni, jedna bez terminu, jedna z wygenerowanym skanem odpowiedzi do analizy (powołuje się na nieistniejący § 9 – Claude powinien to wyłapać), eskalacja do Rady Nadzorczej z gotową analizą i sprawa zamknięta. *Usuń demo* usuwa tylko dane demo.
 - **Jasny lub ciemny.** Przełącznik na dole paska: jak w systemie, jasny, ciemny. Wybór zostaje w przeglądarce i nie miga przy starcie.
@@ -56,11 +62,14 @@ Przykłady:
 |---|---|
 | `get_overview`, `list_cases`, `get_case` | Przegląd, lista i cała sprawa z osią czasu, analizami i terminami |
 | `create_case`, `update_case` | Nowa sprawa; tytuł, kategoria, etap, wynik |
-| `add_event`, `update_event`, `attach_document` | Zdarzenia na osi czasu i pliki z dysku; pismo zakłada termin odpowiedzi z reguły kategorii albo podany `reply_deadline` |
+| `add_event`, `update_event`, `attach_document` | Zdarzenia na osi czasu i pliki z dysku; pismo zakłada termin odpowiedzi z reguły kategorii albo podany `reply_deadline`; daty pisma i nadawca |
+| `share_event`, `link_events`, `link_cases` | To samo pismo w kilku sprawach (wspólne pliki), połączenie pisma dodanego dwa razy, sprawy powiązane |
 | `read_document` | Strony skanu jako obrazy i warstwa tekstowa PDF-u (e-mail `.msg`: nagłówki, treść, załączniki), razem z kontekstem sprawy i listą rzeczy do sprawdzenia |
 | `read_scan` | Dowolny plik z dysku (np. zeskanowany regulamin) bez zapisywania go |
 | `save_analysis` | Analiza: punkty pisma załatwione lub nie, zastrzeżenia z paragrafami, następny krok; zobowiązania spółdzielni i Twoje terminy trafiają do terminów sprawy |
-| `set_deadline` | Dodanie, zmiana, spełnienie lub odrzucenie terminu |
+| `set_deadline` | Dodanie, zmiana, spełnienie lub odrzucenie terminu; przesunięcie obietnicy z historią (`moved_on`, `earlier`) |
+| `get_people`, `save_person` | Członek, pełnomocnik z zakresem, inne osoby |
+| `get_stats`, `export_case` | Jak spółdzielnia odpowiada (terminy, mediana, według lat i sygnatur); chronologia sprawy do skargi |
 | `save_draft`, `send_draft` | Projekt pisma w sprawie; oznaczenie go jako wysłanego (pismo na osi czasu z terminem odpowiedzi) |
 | `import_rules`, `search_rules`, `get_rules`, `set_deadline_rule` | Statut i regulaminy, wyszukiwanie paragrafów, reguły terminów dla kategorii spraw |
 
@@ -95,6 +104,7 @@ app/
   api/action                   zmiany bez plików: { op, args } → funkcje z lib/ops.ts
   api/upload                   zmiany z plikami: zdarzenie ze skanem, załącznik, regulamin
   api/files/[id]               podgląd zapisanego pliku
+  api/export/[id]              zestawienie sprawy do druku (?format=md – Markdown)
   api/demo                     wczytanie / usunięcie danych demo
 proxy.ts                       API tylko dla żądań do 127.0.0.1 / localhost
 components/                    lista spraw, widok sprawy, formularze, regulaminy, ikony, motyw
@@ -107,6 +117,8 @@ lib/
                                projekt do wysłania, bez ruchu; kolejność listy
   rules.ts                     podział regulaminu na paragrafy, wyszukiwanie
   format.ts                    sprawy jako tekst dla Claude'a
+  report.ts                    zestawienie sprawy: Markdown i strona do druku
+  stats.ts                     czas i terminowość odpowiedzi, przesuwane obietnice
   demo.ts                      dane demo względem dzisiejszej daty
   server/db.ts                 plik JSON: blokada, zapis atomowy, kopie zapasowe
   server/files.ts, pdf.ts      pliki; tekst i obrazy stron PDF, zdjęcia przeskalowane dla Claude'a

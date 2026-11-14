@@ -101,11 +101,34 @@ export interface Analysis {
   points?: { point: string; answered: "yes" | "partly" | "no"; note?: string }[];
   /** Problems: rules quoted wrongly, missing legal instruction, contradictions… each with its source. */
   issues?: { text: string; source?: string }[];
+  /** The form of the reply: who signed it, whether it gives reasons and says how to appeal. */
+  formal?: Formal;
   nextStep?: string;
+}
+
+/** Who signs a letter of the cooperative. Only its organs (Zarząd, Rada Nadzorcza) decide on a case. */
+export type Signer = "board" | "admin" | "council" | "other";
+
+export const SIGNER_LABEL: Record<Signer, string> = {
+  board: "Zarząd",
+  admin: "administracja osiedla / biuro",
+  council: "Rada Nadzorcza",
+  other: "inna osoba lub komórka",
+};
+
+export interface Formal {
+  signer?: Signer;
+  /** As written under the letter: "Kierownik Administracji Osiedla …". */
+  signedBy?: string;
+  /** Says how and to whom to appeal (pouczenie). */
+  appealInstruction?: boolean;
+  /** Gives reasons for a refusal (uzasadnienie). */
+  justification?: boolean;
 }
 
 export interface CaseEvent {
   id: string;
+  /** For my letters: filed or delivered (deadlines count from it); for replies: received. */
   date: string;
   kind: EventKind;
   title: string;
@@ -113,6 +136,16 @@ export interface CaseEvent {
   method?: Method;
   /** Reference number on a letter (sygnatura, L.dz.). */
   reference?: string;
+  /** The date written on the letter, when it is not `date` ("pismo z 11.09", received 17.09). */
+  letterDate?: string;
+  /** For my letters: the date the cooperative gives it (its registration), when it is not mine. */
+  registeredDate?: string;
+  /** `date` is not certain, e.g. the letter is missing and the date comes from the reply to it. */
+  dateApprox?: boolean;
+  /** Who sent my letter (a person from Db.people). */
+  senderId?: string;
+  /** The same letter in other cases: their events share this id, the files and the details. */
+  linkId?: string;
   files: FileRef[];
   analysis?: Analysis;
   /** My letter sent from this draft (its full text). */
@@ -148,6 +181,17 @@ export interface Deadline {
   doneEventId?: string;
   /** Not relevant any more (e.g. I decided not to appeal). */
   dropped?: boolean;
+  /** Earlier dates of the same promise, oldest first – each time it was moved. */
+  history?: DeadlineMove[];
+}
+
+export interface DeadlineMove {
+  /** The date promised before. */
+  due: string;
+  /** When it was replaced by a later one. */
+  movedOn: string;
+  /** Where the earlier date came from ("pismo z 01.07.2022"). */
+  source?: string;
 }
 
 export interface Draft {
@@ -172,7 +216,29 @@ export interface Case {
   events: CaseEvent[];
   deadlines: Deadline[];
   drafts: Draft[];
+  /** Cases about the same thing, both ways. */
+  related?: number[];
   /** Example data (Demo button); removed together by "Usuń demo". */
+  demo?: boolean;
+}
+
+export type PersonRole = "member" | "proxy" | "other";
+
+export const ROLE_LABEL: Record<PersonRole, string> = {
+  member: "członek spółdzielni",
+  proxy: "pełnomocnik",
+  other: "inna osoba",
+};
+
+/** Who writes to the cooperative: some requests (documents, appeals) only a member may make. */
+export interface Person {
+  id: string;
+  name: string;
+  role: PersonRole;
+  /** For a proxy: the member (person id) and what the power of attorney covers. */
+  proxyFor?: string;
+  proxyScope?: string;
+  note?: string;
   demo?: boolean;
 }
 
@@ -220,8 +286,9 @@ export interface Db {
   cases: Case[];
   rules: RulesDoc[];
   deadlineRules: DeadlineRule[];
+  people: Person[];
 }
 
 export function emptyDb(): Db {
-  return { version: 1, updatedAt: new Date(0).toISOString(), nextCaseId: 1, cases: [], rules: [], deadlineRules: [] };
+  return { version: 1, updatedAt: new Date(0).toISOString(), nextCaseId: 1, cases: [], rules: [], deadlineRules: [], people: [] };
 }

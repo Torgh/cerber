@@ -1,12 +1,15 @@
 "use client";
 import { Fragment, useState } from "react";
 import { daysBetween, formatDate, plDays } from "@/lib/dates";
-import { answeredShare, caseStatus, deadlineState, isIncomplete, type CaseStatus, type DeadlineState } from "@/lib/status";
+import { eventDates, personText } from "@/lib/format";
+import { answeredShare, caseStatus, deadlineState, formalIssues, isIncomplete, promiseMoves, type CaseStatus, type DeadlineState } from "@/lib/status";
 import {
   BASIS_LABEL,
   CATEGORY_LABEL,
   EVENT_LABEL,
   METHOD_LABEL,
+  OUTGOING_KINDS,
+  SIGNER_LABEL,
   STAGE_LABEL,
   type Case,
   type CaseEvent,
@@ -17,13 +20,14 @@ import {
 import { action, fileUrl } from "./api";
 import type { AppState } from "./App";
 import { countdownOf, deadlineStart } from "./countdown";
-import { CaseForm, DeadlineForm, EventForm } from "./forms";
+import { CaseForm, DeadlineForm, EventForm, LinkForm } from "./forms";
 import * as I from "./icons";
 
 type Dialog =
   | { kind: "case" }
   | { kind: "event"; event?: CaseEvent; initialKind?: EventKind; draft?: Draft }
   | { kind: "deadline"; deadline?: Deadline }
+  | { kind: "link"; event?: CaseEvent }
   | null;
 
 const EVENT_ICON: Record<EventKind, (p: { size?: number }) => React.ReactNode> = {
@@ -142,6 +146,21 @@ function AnalysisBox({ e }: { e: CaseEvent }) {
             </li>
           ))}
         </ul>
+      )}
+      {a.formal && (
+        <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {a.formal.signer && (
+            <span className={`chip${a.formal.signer === "admin" || a.formal.signer === "other" ? " soon" : ""}`}>
+              podpis: {a.formal.signedBy ?? SIGNER_LABEL[a.formal.signer]}
+            </span>
+          )}
+          {a.formal.appealInstruction !== undefined && (
+            <span className={`chip${a.formal.appealInstruction ? " ok" : " late"}`}>{a.formal.appealInstruction ? "z pouczeniem" : "bez pouczenia o odwołaniu"}</span>
+          )}
+          {a.formal.justification !== undefined && (
+            <span className={`chip${a.formal.justification ? " ok" : " late"}`}>{a.formal.justification ? "z uzasadnieniem" : "bez uzasadnienia"}</span>
+          )}
+        </div>
       )}
       {a.nextStep && (
         <div style={{ marginTop: 6 }}>
@@ -275,6 +294,9 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
     const Icon = EVENT_ICON[e.kind];
     const started = c.deadlines.filter((d) => d.fromEventId === e.id && d.type === "reply");
     const met = c.deadlines.filter((d) => d.doneEventId === e.id && d.party === "coop");
+    const sender = e.senderId ? db.people.find((p) => p.id === e.senderId) : undefined;
+    const alsoIn = e.linkId ? db.cases.filter((o) => o.id !== c.id && o.events.some((x) => x.linkId === e.linkId)) : [];
+    const dates = eventDates(e);
     return {
       date: e.date,
       order: 0,
@@ -292,6 +314,17 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
                 {e.reference ? ` · ${e.reference}` : ""}
               </span>
             </div>
+            {(dates.length > 0 || sender || alsoIn.length > 0) && (
+              <div className="sub" style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                {dates.length > 0 && <span className={e.dateApprox ? "tone-soon" : undefined}>{dates.join(" · ")}</span>}
+                {sender && <span>nadawca: {personText(db, sender)}</span>}
+                {alsoIn.map((o) => (
+                  <a key={o.id} className="chip info" href={`#sprawa-${o.id}`} title={o.title}>
+                    to samo pismo w #{o.id}
+                  </a>
+                ))}
+              </div>
+            )}
             {e.description && <div className="body">{e.description}</div>}
             {!!e.files.length && (
               <div className="files">
@@ -311,9 +344,11 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
             ))}
             {met.map((d) => {
               const late = daysBetween(d.due, d.doneAt!);
+              const dated = late > 0 && e.letterDate && e.letterDate <= d.due;
               return (
                 <div key={d.id} style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {late > 0 ? <span className="chip late">odpowiedź {plDays(late)} po terminie</span> : <span className="chip ok">w terminie</span>}
+                  {dated && <span className="chip info">pismo datowane w terminie</span>}
                   {d.type === "reply" && isIncomplete(e.analysis) && <span className="chip soon">niepełna odpowiedź</span>}
                 </div>
               );
@@ -344,11 +379,16 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
               <button className="btn link" onClick={() => setDialog({ kind: "event", event: e })}>
                 Edytuj / dołącz plik
               </button>
+              {(OUTGOING_KINDS.includes(e.kind) || e.kind === "response") && db.cases.length > 1 && (
+                <button className="btn link" onClick={() => setDialog({ kind: "link", event: e })}>
+                  Także w innej sprawie
+                </button>
+              )}
               <button
                 className="btn link"
                 style={{ color: "var(--late-text)" }}
                 onClick={async () => {
-                  if (!confirm(`Usunąć zdarzenie „${e.title}” razem z plikami?`)) return;
+                  if (!confirm(alsoIn.length ? `Usunąć „${e.title}” z tej sprawy? W #${alsoIn.map((o) => o.id).join(", #")} pismo i pliki zostaną.` : `Usunąć zdarzenie „${e.title}” razem z plikami?`)) return;
                   await action("deleteEvent", { caseId: c.id, eventId: e.id });
                   await reload();
                 }}
@@ -394,6 +434,7 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
   items.sort((a, b) => a.date.localeCompare(b.date) || a.order - b.order);
 
   const deadlines = c.deadlines.map((d) => deadlineState(d, today, c)).sort((a, b) => a.deadline.due.localeCompare(b.deadline.due));
+  const formalCount = c.events.filter((e) => formalIssues(e.analysis).length).length;
   const lastEvent = c.events[c.events.length - 1];
 
   return (
@@ -504,7 +545,12 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
                     <span className="src">
                       do {formatDate(s.deadline.due)} · {s.deadline.source ?? BASIS_LABEL[s.deadline.basis]}
                       {s.deadline.doneAt ? ` · ${s.incomplete ? "odpowiedź niepełna" : "spełniony"} ${formatDate(s.deadline.doneAt)}` : ""}
+                      {s.datedInTime ? ` (pismo z ${formatDate(s.datedInTime)})` : ""}
                       {s.deadline.dropped ? " · nieaktualny" : ""}
+                      {(() => {
+                        const pm = promiseMoves(s.deadline);
+                        return pm.moved ? ` · przesuwany ${pm.moved}×${pm.broken ? `, ${pm.broken}× po terminie` : ""}: ${pm.dates.map((x) => formatDate(x)).join(" → ")}` : "";
+                      })()}
                     </span>
                   </button>
                 ))}
@@ -566,6 +612,37 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
             </div>
           )}
 
+          {(c.related?.length ?? 0) > 0 && (
+            <div className="panel">
+              <h2 className="label" style={{ margin: 0 }}>
+                Powiązane sprawy
+              </h2>
+              <ul className="plain" style={{ margin: "6px 0 0", padding: 0, listStyle: "none", fontSize: 14 }}>
+                {c.related!.map((id) => {
+                  const o = db.cases.find((x) => x.id === id);
+                  return (
+                    <li key={id} style={{ display: "flex", gap: 8, alignItems: "baseline", marginTop: 4 }}>
+                      <a href={`#sprawa-${id}`} style={{ flex: 1 }}>
+                        #{id} {o?.title ?? ""}
+                      </a>
+                      <button
+                        className="btn link"
+                        style={{ fontSize: 12 }}
+                        title="Rozłącz"
+                        onClick={async () => {
+                          await action("linkCases", { caseId: c.id, otherCaseId: id, unlink: true });
+                          await reload();
+                        }}
+                      >
+                        rozłącz
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
           <div className="panel">
             <h2 className="label" style={{ margin: 0 }}>
               Sprawa
@@ -573,11 +650,20 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
             <div className="muted" style={{ fontSize: 13, marginTop: 6 }}>
               Założona {formatDate(c.createdAt.slice(0, 10))}
               {rule ? ` · reguła: ${plDays(rule.days)} (${rule.source})` : ""}
+              {formalCount ? ` · odpowiedzi z brakami formalnymi: ${formalCount}` : ""}
             </div>
             <div className="toolbar" style={{ marginTop: 10 }}>
               <button className="btn small" onClick={() => setDialog({ kind: "case" })}>
                 Edytuj / zamknij
               </button>
+              <a className="btn small" href={`/api/export/${c.id}`} target="_blank" rel="noreferrer" title="Chronologia do skargi: pisma, terminy, obietnice, braki – do druku lub PDF">
+                Zestawienie
+              </a>
+              {db.cases.length > 1 && (
+                <button className="btn small" onClick={() => setDialog({ kind: "link" })}>
+                  Powiąż
+                </button>
+              )}
               <button
                 className="btn small danger"
                 onClick={async () => {
@@ -601,6 +687,7 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
           event={dialog.event}
           initialKind={dialog.initialKind}
           draft={dialog.draft}
+          people={db.people}
           rule={rule}
           today={today}
           onClose={() => setDialog(null)}
@@ -608,6 +695,7 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
         />
       )}
       {dialog?.kind === "deadline" && <DeadlineForm c={c} deadline={dialog.deadline} today={today} onClose={() => setDialog(null)} onSaved={closeAndReload} />}
+      {dialog?.kind === "link" && <LinkForm c={c} cases={db.cases} event={dialog.event} onClose={() => setDialog(null)} onSaved={closeAndReload} />}
     </div>
   );
 }

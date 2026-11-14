@@ -15,12 +15,15 @@ import {
   type Db,
   type Deadline,
   type DeadlineBasis,
+  type DeadlineMove,
   type Draft,
   type EventKind,
   type FileRef,
   type Method,
   type Outcome,
   type Party,
+  type Person,
+  type PersonRole,
   type RulesDoc,
   type RulesKind,
   type Stage,
@@ -115,8 +118,37 @@ export function updateCase(db: Db, id: number, patch: CasePatch): Case {
 export function deleteCase(db: Db, id: number): Case {
   const c = getCase(db, id);
   db.cases = db.cases.filter((x) => x.id !== id);
+  for (const o of db.cases) if (o.related?.includes(id)) setRelated(o, o.related.filter((x) => x !== id));
   touch(db);
   return c;
+}
+
+function setRelated(c: Case, ids: number[]) {
+  c.related = ids.length ? [...new Set(ids)].sort((a, b) => a - b) : undefined;
+}
+
+/** Marks two cases as related (both ways), or unlinks them. */
+export function linkCases(db: Db, caseId: number, otherId: number, unlink = false) {
+  const a = getCase(db, caseId);
+  const b = getCase(db, otherId);
+  if (a.id === b.id) throw new OpError("Sprawa nie może być powiązana sama ze sobą.");
+  if (unlink) {
+    setRelated(a, (a.related ?? []).filter((x) => x !== b.id));
+    setRelated(b, (b.related ?? []).filter((x) => x !== a.id));
+  } else {
+    setRelated(a, [...(a.related ?? []), b.id]);
+    setRelated(b, [...(b.related ?? []), a.id]);
+  }
+  touch(db, a);
+  touch(db, b);
+}
+
+/** Files of `files` that no event and no rules document uses any more – safe to delete from disk. */
+export function unreferenced(db: Db, files: FileRef[]): FileRef[] {
+  const used = new Set<string>();
+  for (const c of db.cases) for (const e of c.events) for (const f of e.files) used.add(f.id);
+  for (const r of db.rules) if (r.file) used.add(r.file.id);
+  return files.filter((f) => !used.has(f.id));
 }
 
 /** How long the cooperative has: a number of days from the event, or a fixed date. */
@@ -135,12 +167,20 @@ export interface EventInput {
   description?: string;
   method?: Method;
   reference?: string;
+  letterDate?: string;
+  registeredDate?: string;
+  dateApprox?: boolean;
+  senderId?: string;
   files?: FileRef[];
   /**
    * For my letters: the deadline for the reply. Leave it out to use the deadline rule of the case's
    * category (from the rules); null for no deadline (the case then shows "set a deadline").
    */
   replyDeadline?: DeadlineInput | null;
+}
+
+function checkPerson(db: Db, id: string | undefined) {
+  if (id && !db.people.some((p) => p.id === id)) throw new OpError(`Nie ma osoby ${id}.`, 404);
 }
 
 function resolveDue(start: string, d: DeadlineInput): string {
@@ -155,6 +195,9 @@ function resolveDue(start: string, d: DeadlineInput): string {
 export function addEvent(db: Db, caseId: number, input: EventInput): { event: CaseEvent; deadline?: Deadline } {
   const c = getCase(db, caseId);
   checkDate(input.date, "Data zdarzenia");
+  if (input.letterDate) checkDate(input.letterDate, "Data na piśmie");
+  if (input.registeredDate) checkDate(input.registeredDate, "Data rejestracji");
+  checkPerson(db, input.senderId);
   const event: CaseEvent = {
     id: nanoid(10),
     date: input.date,
@@ -163,6 +206,10 @@ export function addEvent(db: Db, caseId: number, input: EventInput): { event: Ca
     description: input.description?.trim() || undefined,
     method: input.method,
     reference: input.reference?.trim() || undefined,
+    letterDate: input.letterDate && input.letterDate !== input.date ? input.letterDate : undefined,
+    registeredDate: input.registeredDate && input.registeredDate !== input.date ? input.registeredDate : undefined,
+    dateApprox: input.dateApprox || undefined,
+    senderId: input.senderId || undefined,
     files: input.files ?? [],
   };
   c.events.push(event);
@@ -222,13 +269,23 @@ export interface EventPatch {
   description?: string;
   method?: Method | null;
   reference?: string;
+  /** null clears it. */
+  letterDate?: string | null;
+  registeredDate?: string | null;
+  dateApprox?: boolean;
+  senderId?: string | null;
 }
 
-export function updateEvent(db: Db, caseId: number, eventId: string, patch: EventPatch): CaseEvent {
-  const c = getCase(db, caseId);
-  const e = getEvent(c, eventId);
+/** The same letter in the other cases it is linked to (see shareEvent). */
+function linkedCopies(db: Db, e: CaseEvent): { c: Case; e: CaseEvent }[] {
+  if (!e.linkId) return [];
+  const out: { c: Case; e: CaseEvent }[] = [];
+  for (const c of db.cases) for (const x of c.events) if (x.linkId === e.linkId && x !== e) out.push({ c, e: x });
+  return out;
+}
+
+function applyEventPatch(db: Db, c: Case, e: CaseEvent, patch: EventPatch) {
   if (patch.date !== undefined) {
-    checkDate(patch.date, "Data zdarzenia");
     e.date = patch.date;
     sortEvents(c);
   }
@@ -236,8 +293,85 @@ export function updateEvent(db: Db, caseId: number, eventId: string, patch: Even
   if (patch.description !== undefined) e.description = patch.description.trim() || undefined;
   if (patch.method !== undefined) e.method = patch.method ?? undefined;
   if (patch.reference !== undefined) e.reference = patch.reference.trim() || undefined;
+  if (patch.letterDate !== undefined) e.letterDate = patch.letterDate && patch.letterDate !== e.date ? patch.letterDate : undefined;
+  if (patch.registeredDate !== undefined) e.registeredDate = patch.registeredDate && patch.registeredDate !== e.date ? patch.registeredDate : undefined;
+  if (patch.dateApprox !== undefined) e.dateApprox = patch.dateApprox || undefined;
+  if (patch.senderId !== undefined) e.senderId = patch.senderId || undefined;
   touch(db, c);
+}
+
+/** Changes an event – and its copies in linked cases, since it is the same letter. */
+export function updateEvent(db: Db, caseId: number, eventId: string, patch: EventPatch): CaseEvent {
+  const c = getCase(db, caseId);
+  const e = getEvent(c, eventId);
+  if (patch.date !== undefined) checkDate(patch.date, "Data zdarzenia");
+  if (patch.letterDate) checkDate(patch.letterDate, "Data na piśmie");
+  if (patch.registeredDate) checkDate(patch.registeredDate, "Data rejestracji");
+  checkPerson(db, patch.senderId ?? undefined);
+  applyEventPatch(db, c, e, patch);
+  for (const x of linkedCopies(db, e)) applyEventPatch(db, x.c, x.e, patch);
   return e;
+}
+
+/**
+ * Puts the same letter into another case (one letter answering two cases, or my e-mail about both):
+ * a copy with the same files and details, linked so that edits reach both. The analysis stays per
+ * case – the letter answers different points in each. In the other case it starts or meets
+ * deadlines like any letter (addEvent).
+ */
+export function shareEvent(db: Db, caseId: number, eventId: string, otherCaseId: number, replyDeadline?: DeadlineInput | null): { event: CaseEvent; deadline?: Deadline } {
+  const c = getCase(db, caseId);
+  const e = getEvent(c, eventId);
+  const other = getCase(db, otherCaseId);
+  if (other.id === c.id) throw new OpError("To ta sama sprawa.");
+  if (e.linkId && other.events.some((x) => x.linkId === e.linkId)) throw new OpError(`To pismo jest już w sprawie #${other.id}.`);
+  e.linkId ??= nanoid(10);
+  const res = addEvent(db, other.id, {
+    date: e.date,
+    kind: e.kind,
+    title: e.title,
+    description: e.description,
+    method: e.method,
+    reference: e.reference,
+    letterDate: e.letterDate,
+    registeredDate: e.registeredDate,
+    dateApprox: e.dateApprox,
+    senderId: e.senderId,
+    files: e.files.map((f) => ({ ...f })),
+    replyDeadline,
+  });
+  res.event.linkId = e.linkId;
+  linkCases(db, c.id, other.id);
+  return res;
+}
+
+/**
+ * Links two events that are already the same letter in two cases (added twice before). Files with
+ * the same name and size become one; returns the duplicates no longer used, to delete from disk.
+ */
+export function linkEvents(db: Db, caseId: number, eventId: string, otherCaseId: number, otherEventId: string): FileRef[] {
+  const c = getCase(db, caseId);
+  const e = getEvent(c, eventId);
+  const other = getCase(db, otherCaseId);
+  const o = getEvent(other, otherEventId);
+  if (e === o) throw new OpError("To to samo zdarzenie.");
+  if (e.kind !== o.kind) throw new OpError("Połączyć można tylko zdarzenia tego samego rodzaju (to samo pismo).");
+  const id = e.linkId ?? o.linkId ?? nanoid(10);
+  for (const x of [e, o, ...linkedCopies(db, e).map((l) => l.e), ...linkedCopies(db, o).map((l) => l.e)]) x.linkId = id;
+  const replaced: FileRef[] = [];
+  const files: FileRef[] = [];
+  for (const f of o.files) {
+    const same = e.files.find((x) => x.name === f.name && x.size === f.size);
+    if (same) {
+      if (same.id !== f.id) replaced.push(f);
+      files.push({ ...same });
+    } else files.push(f);
+  }
+  o.files = files;
+  // The first event gets the files only the other one had.
+  for (const f of o.files) if (!e.files.some((x) => x.id === f.id)) e.files.push({ ...f });
+  linkCases(db, c.id, other.id);
+  return unreferenced(db, replaced);
 }
 
 /** Removes an event, the deadlines it started, and reopens the deadlines it met. Returns its files. */
@@ -267,16 +401,25 @@ export function attachFiles(db: Db, caseId: number, eventId: string, files: File
   const c = getCase(db, caseId);
   const e = getEvent(c, eventId);
   e.files.push(...files);
+  for (const x of linkedCopies(db, e)) {
+    x.e.files.push(...files.map((f) => ({ ...f })));
+    touch(db, x.c);
+  }
   touch(db, c);
   return e;
 }
 
+/** Removes a file from the event (and its linked copies). Delete it from disk only if unreferenced. */
 export function removeFile(db: Db, caseId: number, eventId: string, fileId: string): FileRef {
   const c = getCase(db, caseId);
   const e = getEvent(c, eventId);
   const f = e.files.find((x) => x.id === fileId);
   if (!f) throw new OpError("Nie ma takiego pliku.", 404);
   e.files = e.files.filter((x) => x.id !== fileId);
+  for (const x of linkedCopies(db, e)) {
+    x.e.files = x.e.files.filter((y) => y.id !== fileId);
+    touch(db, x.c);
+  }
   touch(db, c);
   return f;
 }
@@ -318,6 +461,18 @@ export interface DeadlinePatch {
   source?: string;
   doneAt?: string | null;
   dropped?: boolean;
+  /**
+   * The cooperative moved its promise on this date: the old due date goes to the history (a broken
+   * promise when it had already passed). Without it a new `due` is a correction.
+   */
+  movedOn?: string;
+  /** Earlier dates of this promise to record (e.g. from old letters), each with when it was replaced. */
+  earlier?: DeadlineMove[];
+}
+
+function recordMove(d: Deadline, m: DeadlineMove) {
+  const h = [...(d.history ?? []), m].sort((a, b) => a.movedOn.localeCompare(b.movedOn) || a.due.localeCompare(b.due));
+  d.history = h.filter((x, i) => !i || x.due !== h[i - 1].due || x.movedOn !== h[i - 1].movedOn);
 }
 
 export function updateDeadline(db: Db, caseId: number, deadlineId: string, patch: DeadlinePatch): Deadline {
@@ -325,8 +480,17 @@ export function updateDeadline(db: Db, caseId: number, deadlineId: string, patch
   const d = c.deadlines.find((x) => x.id === deadlineId);
   if (!d) throw new OpError("Nie ma takiego terminu.", 404);
   if (patch.label !== undefined && patch.label.trim()) d.label = patch.label.trim();
+  for (const m of patch.earlier ?? []) {
+    checkDate(m.due, "Wcześniejszy termin");
+    checkDate(m.movedOn, "Data przesunięcia");
+    recordMove(d, { due: m.due, movedOn: m.movedOn, source: m.source?.trim() || undefined });
+  }
   if (patch.due !== undefined) {
     checkDate(patch.due, "Termin");
+    if (patch.movedOn && patch.due !== d.due) {
+      checkDate(patch.movedOn, "Data przesunięcia");
+      recordMove(d, { due: d.due, movedOn: patch.movedOn, source: d.source });
+    }
     d.due = patch.due;
   }
   if (patch.basis !== undefined) d.basis = patch.basis;
@@ -348,21 +512,46 @@ export function deleteDeadline(db: Db, caseId: number, deadlineId: string) {
 }
 
 export interface AnalysisInput extends Omit<Analysis, "at"> {
-  /** What the cooperative promises to do and by when ("wymiana pionu do 30.06"). */
-  commitments?: { label: string; due: string; source?: string }[];
+  /**
+   * What the cooperative promises to do and by when ("wymiana pionu do 30.06"). `replaces`: the id of
+   * an earlier deadline for the same promise – it is moved to the new date and keeps its history.
+   */
+  commitments?: { label: string; due: string; source?: string; replaces?: string }[];
   /** What I have to do and by when (an appeal within 14 days…). */
   myDeadlines?: { label: string; due: string; source?: string }[];
 }
 
-export function saveAnalysis(db: Db, caseId: number, eventId: string, input: AnalysisInput): { event: CaseEvent; added: Deadline[] } {
+export function saveAnalysis(db: Db, caseId: number, eventId: string, input: AnalysisInput): { event: CaseEvent; added: Deadline[]; moved: Deadline[] } {
   const c = getCase(db, caseId);
   const e = getEvent(c, eventId);
   const { commitments, myDeadlines, ...analysis } = input;
+  if (analysis.formal) {
+    const f = analysis.formal;
+    analysis.formal = { signer: f.signer, signedBy: f.signedBy?.trim() || undefined, appealInstruction: f.appealInstruction, justification: f.justification };
+  }
   e.analysis = { ...analysis, at: now() };
   const added: Deadline[] = [];
+  const moved: Deadline[] = [];
   const add = (party: Party, list: AnalysisInput["commitments"]) => {
     for (const x of list ?? []) {
       checkDate(x.due, `Termin "${x.label}"`);
+      // The same promise again, with a later date: move the old deadline instead of adding one.
+      if (x.replaces) {
+        const old = c.deadlines.find((d) => d.id === x.replaces);
+        if (!old) throw new OpError(`Nie ma terminu ${x.replaces} do przesunięcia.`, 404);
+        if (old.fromEventId !== e.id) {
+          if (old.due !== x.due) recordMove(old, { due: old.due, movedOn: e.letterDate ?? e.date, source: old.source });
+          old.fromEventId = e.id;
+          old.doneAt = undefined;
+          old.doneEventId = undefined;
+          old.dropped = undefined;
+          moved.push(old);
+        }
+        old.label = x.label;
+        old.due = x.due;
+        old.source = x.source ?? `${e.title}, ${e.date}`;
+        continue;
+      }
       // Saving the analysis again must not duplicate its deadlines.
       const same = c.deadlines.find((d) => d.fromEventId === e.id && d.party === party && d.label === x.label);
       if (same) {
@@ -387,7 +576,7 @@ export function saveAnalysis(db: Db, caseId: number, eventId: string, input: Ana
   add("coop", commitments);
   add("me", myDeadlines);
   touch(db, c);
-  return { event: e, added };
+  return { event: e, added, moved };
 }
 
 export function addDraft(db: Db, caseId: number, title: string, body: string): Draft {
@@ -473,4 +662,53 @@ export function setDeadlineRule(db: Db, category: Category, days: number | null,
     db.deadlineRules.push({ category, days: Math.round(days), source: source.trim() });
   }
   touch(db);
+}
+
+export interface PersonInput {
+  name?: string;
+  role?: PersonRole;
+  /** null clears it. */
+  proxyFor?: string | null;
+  proxyScope?: string | null;
+  note?: string | null;
+}
+
+/** Adds a person (without id) or changes one. */
+export function savePerson(db: Db, input: PersonInput & { id?: string }): Person {
+  let p = input.id ? db.people.find((x) => x.id === input.id) : undefined;
+  if (input.id && !p) throw new OpError(`Nie ma osoby ${input.id}.`, 404);
+  if (!p) {
+    if (!input.name?.trim()) throw new OpError("Osoba musi mieć imię i nazwisko.");
+    p = { id: nanoid(8), name: input.name.trim(), role: input.role ?? "other" };
+    db.people.push(p);
+  }
+  if (input.name !== undefined) {
+    if (!input.name.trim()) throw new OpError("Osoba musi mieć imię i nazwisko.");
+    p.name = input.name.trim();
+  }
+  if (input.role !== undefined) p.role = input.role;
+  if (input.proxyFor !== undefined) {
+    if (input.proxyFor === p.id) throw new OpError("Osoba nie może być własnym pełnomocnikiem.");
+    checkPerson(db, input.proxyFor ?? undefined);
+    p.proxyFor = input.proxyFor || undefined;
+  }
+  if (input.proxyScope !== undefined) p.proxyScope = input.proxyScope?.trim() || undefined;
+  if (input.note !== undefined) p.note = input.note?.trim() || undefined;
+  if (p.role !== "proxy") {
+    p.proxyFor = undefined;
+    p.proxyScope = undefined;
+  }
+  touch(db);
+  return p;
+}
+
+/** Removes a person; letters they sent keep no sender. */
+export function deletePerson(db: Db, id: string): Person {
+  const p = db.people.find((x) => x.id === id);
+  if (!p) throw new OpError(`Nie ma osoby ${id}.`, 404);
+  db.people = db.people.filter((x) => x.id !== id);
+  for (const o of db.people) if (o.proxyFor === id) o.proxyFor = undefined;
+  for (const c of db.cases) for (const e of c.events) if (e.senderId === id) e.senderId = undefined;
+  touch(db);
+  return p;
 }
