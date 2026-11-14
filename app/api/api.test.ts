@@ -117,6 +117,9 @@ describe("API", () => {
   it("refuses other origins and unknown operations", async () => {
     expect((await action(json({ op: "createCase", args: {} }, "https://evil.example"))).status).toBe(403);
     expect((await action(json({ op: "dropTables", args: {} }))).status).toBe(400);
+    // Names inherited from Object are not operations either.
+    for (const op of ["constructor", "toString", "__proto__", "hasOwnProperty"]) expect((await action(json({ op, args: {} }))).status).toBe(400);
+    expect((await action(json({ op: { evil: 1 }, args: {} }))).status).toBe(400);
     expect((await action(json({ op: "updateCase", args: { caseId: 5, patch: {} } }))).status).toBe(404);
   });
 

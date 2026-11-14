@@ -287,6 +287,9 @@ describe("case report", () => {
     expect(html).toContain("a &quot;b&quot; &amp; c");
     expect(escapeHtml(`<>&"'`)).toBe("&lt;&gt;&amp;&quot;&#39;");
     expect(reportMarkdown(c, db, "2026-01-06")).not.toContain("## Terminy odpowiedzi");
+    // A backslash before a pipe must not undo the escaping of the table cell.
+    ops.addEvent(db, c.id, { date: "2026-01-06", kind: "note", title: "a\\|b" });
+    expect(reportMarkdown(c, db, "2026-01-07")).toContain("| a\\\\\\|b |");
   });
 });
 

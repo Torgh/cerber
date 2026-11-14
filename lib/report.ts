@@ -103,7 +103,8 @@ export function reportTitle(c: Case): string {
   return `Sprawa #${c.id}: ${c.title}`;
 }
 
-const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\n+/g, " ");
+/** A Markdown table cell: backslashes first, so that "\|" in the text cannot undo the escaped pipe. */
+const cell = (s: string) => s.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n+/g, " ");
 
 export function reportMarkdown(c: Case, db: Db, today: string): string {
   const lines = [`# ${reportTitle(c)}`, ""];

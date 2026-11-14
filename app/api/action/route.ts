@@ -7,8 +7,12 @@ import type { Db, FileRef } from "@/lib/types";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/** Changes without files, as { op, args }. The ops are the same ones the MCP server uses. */
-const ACTIONS: Record<string, (db: any, a: any) => unknown> = {
+/**
+ * Changes without files, as { op, args }. The ops are the same ones the MCP server uses. A Map, so
+ * only these names resolve – never something inherited such as "constructor".
+ */
+const ACTIONS = new Map<string, (db: any, a: any) => unknown>(
+  Object.entries({
   createCase: (db, a) => ops.createCase(db, a),
   updateCase: (db, a) => ops.updateCase(db, a.caseId, a.patch),
   deleteCase: (db, a) => ops.deleteCase(db, a.caseId),
@@ -26,7 +30,8 @@ const ACTIONS: Record<string, (db: any, a: any) => unknown> = {
   setDeadlineRule: (db, a) => ops.setDeadlineRule(db, a.category, a.days, a.source),
   savePerson: (db, a) => ops.savePerson(db, a),
   deletePerson: (db, a) => ops.deletePerson(db, a.id),
-};
+  } satisfies Record<string, (db: any, a: any) => unknown>),
+);
 
 /** Files the operation took out of the data (a linked letter may still use them elsewhere). */
 function released(op: string, result: any): FileRef[] {
@@ -49,8 +54,8 @@ export async function POST(req: Request) {
   return handle(async () => {
     checkOrigin(req);
     const { op, args } = (await req.json()) as { op: string; args: any };
-    const fn = ACTIONS[op];
-    if (!fn) throw new ops.OpError(`Nieznana operacja ${op}.`);
+    const fn = typeof op === "string" ? ACTIONS.get(op) : undefined;
+    if (!fn) throw new ops.OpError(`Nieznana operacja ${String(op)}.`);
     const { result, gone } = await mutate((db: Db) => {
       const result = fn(db, args ?? {});
       return { result, gone: ops.unreferenced(db, released(op, result)) };
