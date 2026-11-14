@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { samplePdf, withTempDataDir } from "@/lib/testUtils";
+import * as ops from "@/lib/ops";
+import { mutate } from "@/lib/server/db";
 import type { Case, Db } from "@/lib/types";
 import { POST as action } from "./action/route";
 import { DELETE as removeDemo, POST as loadDemo } from "./demo/route";
@@ -45,6 +47,21 @@ describe("API", () => {
 
     await action(json({ op: "deleteEvent", args: { caseId: 1, eventId: ev.id } }));
     expect((await getState()).db.cases[0].events).toHaveLength(0);
+  });
+
+  it("marks a draft as sent with the proof of sending", async () => {
+    await action(json({ op: "createCase", args: { title: "Dokumenty", category: "documents" } }));
+    const draft = await mutate((db) => ops.addDraft(db, 1, "Wniosek członka", "Treść"));
+    const proof = new File(["potwierdzenie"], "potwierdzenie.txt", { type: "text/plain" });
+    const res = await upload(
+      form("sendDraft", { caseId: 1, draftId: draft.id, event: { date: "2026-11-16", kind: "submitted", method: "in_person", replyDeadline: { days: 42, basis: "rules" } } }, [proof]),
+    );
+    expect(res.status).toBe(200);
+    const c = (await getState()).db.cases[0];
+    expect(c.events[0]).toMatchObject({ kind: "submitted", title: "Wniosek członka", draftId: draft.id });
+    expect(c.events[0].files).toHaveLength(1);
+    expect(c.drafts[0].sentAt).toBe("2026-11-16");
+    expect((await upload(form("sendDraft", { caseId: 1, draftId: draft.id, event: { date: "2026-11-17" } }))).status).toBe(400);
   });
 
   it("answers 204 while nothing changed", async () => {

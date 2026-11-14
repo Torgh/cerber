@@ -252,6 +252,13 @@ export function deleteEvent(db: Db, caseId: number, eventId: string): FileRef[] 
       d.doneEventId = undefined;
     }
   }
+  // The draft it was sent from is unsent again.
+  for (const d of c.drafts) {
+    if (d.sentEventId === eventId) {
+      d.sentAt = undefined;
+      d.sentEventId = undefined;
+    }
+  }
   touch(db, c);
   return e.files;
 }
@@ -394,7 +401,26 @@ export function addDraft(db: Db, caseId: number, title: string, body: string): D
 export function deleteDraft(db: Db, caseId: number, draftId: string) {
   const c = getCase(db, caseId);
   c.drafts = c.drafts.filter((d) => d.id !== draftId);
+  for (const e of c.events) if (e.draftId === draftId) e.draftId = undefined;
   touch(db, c);
+}
+
+/**
+ * I sent a draft: it goes on the timeline as my letter (by default "letter", with the reply deadline
+ * of addEvent) and the draft is marked as sent, so the case stops asking for it.
+ */
+export function sendDraft(db: Db, caseId: number, draftId: string, input: Omit<EventInput, "kind"> & { kind?: EventKind }): { event: CaseEvent; deadline?: Deadline } {
+  const c = getCase(db, caseId);
+  const draft = c.drafts.find((d) => d.id === draftId);
+  if (!draft) throw new OpError("Nie ma takiego projektu pisma.", 404);
+  if (draft.sentAt) throw new OpError(`Projekt „${draft.title}” jest już oznaczony jako wysłany ${draft.sentAt}.`);
+  const kind = input.kind ?? "letter";
+  if (!OUTGOING_KINDS.includes(kind)) throw new OpError("Wysłany projekt to pismo ode mnie (zgłoszenie, ponaglenie, odwołanie albo pismo).");
+  const res = addEvent(db, caseId, { ...input, kind, title: input.title?.trim() || draft.title });
+  res.event.draftId = draft.id;
+  draft.sentAt = res.event.date;
+  draft.sentEventId = res.event.id;
+  return res;
 }
 
 export interface RulesInput {

@@ -115,6 +115,8 @@ export interface CaseEvent {
   reference?: string;
   files: FileRef[];
   analysis?: Analysis;
+  /** My letter sent from this draft (its full text). */
+  draftId?: string;
 }
 
 export type Party = "coop" | "me";
@@ -153,6 +155,9 @@ export interface Draft {
   at: string;
   title: string;
   body: string;
+  /** Sent on this date: the letter is the event sentEventId on the timeline. */
+  sentAt?: string;
+  sentEventId?: string;
 }
 
 export interface Case {

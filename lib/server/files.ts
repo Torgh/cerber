@@ -23,6 +23,7 @@ const MIME: Record<string, string> = {
   ".doc": "application/msword",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".odt": "application/vnd.oasis.opendocument.text",
+  ".msg": "application/vnd.ms-outlook",
 };
 
 export function mimeOf(name: string): string {

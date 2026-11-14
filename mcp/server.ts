@@ -17,6 +17,7 @@ import * as ops from "../lib/ops";
 import { searchRules } from "../lib/rules";
 import { mutate, readDb, dataDir } from "../lib/server/db";
 import { deleteStored, mimeOf, readStored, storeFromPath } from "../lib/server/files";
+import { parseMsg, msgText } from "../lib/server/msg";
 import { imageForClaude, pdfPageImages, pdfText, type PageImage } from "../lib/server/pdf";
 import { caseRank, caseStatus } from "../lib/status";
 import { CATEGORIES, CATEGORY_LABEL, EVENT_KINDS, RULES_KIND_LABEL, type FileRef } from "../lib/types";
@@ -40,7 +41,11 @@ Jak pracować:
   • sugerowany następny krok (next_step).
   Cytuj tylko to, co jest w dokumentach. Datę lub kwotę, której nie da się odczytać, nazwij nieczytelną – nie zgaduj.
 - Po terminie: zaproponuj ponaglenie (save_draft), dalej odwołanie do organu wskazanego w statucie (zwykle Rada Nadzorcza).
-  Projekty pism zapisuj save_draft – użytkownik sam je wysyła.
+  Projekty pism zapisuj save_draft – użytkownik sam je wysyła. Gdy powie, że wysłał, zapisz to send_draft.
+- Odpowiedź w terminie, ale niepełna (większość punktów bez odpowiedzi) albo sprawa bez ruchu i bez terminu:
+  get_overview pokaże je osobno – zaproponuj ponaglenie o brakujące punkty albo zapytaj, czy zamknąć sprawę.
+- E-maile Outlooka (.msg) read_document czyta same: nagłówki (od, do, DW, data wysłania), treść i załączniki.
+  Datę zdarzenia sprawdzaj z nagłówka „Data”.
 - Regulaminy: import_rules wczytuje PDF/TXT z warstwą tekstową. Skan bez tekstu: przeczytaj go read_scan i przekaż
   tekst do import_rules. Terminy, które regulamin daje spółdzielni dla danej kategorii spraw, zapisz set_deadline_rule.
 - Odpowiadaj po polsku, zwięźle. Nie jesteś prawnikiem: przy sporze o pieniądze lub prawa do lokalu zasugeruj
@@ -102,6 +107,9 @@ tool("get_overview", "Przegląd: sprawy po terminie, zbliżające się terminy, 
   group("⚠ Po terminie", (s) => s.flags.includes("overdue") || s.flags.includes("my-overdue"));
   group("📥 Odpowiedzi do analizy", (s) => s.flags.includes("to-analyze"));
   group("❔ Czekają bez terminu", (s) => s.flags.includes("no-deadline"));
+  group("✉ Projekty pism do wysłania", (s) => s.flags.includes("draft-unsent"));
+  group("½ Niepełne odpowiedzi (nic dalej nie zaplanowano)", (s) => s.flags.includes("incomplete"));
+  group("💤 Bez następnego kroku", (s) => s.flags.includes("stalled"));
   group("⏳ Terminy w ciągu 7 dni", (s) => s.flags.includes("soon") || s.flags.includes("my-soon"));
   const rest = rows.filter((r) => !r.s.flags.length);
   if (rest.length) lines.push("## Pozostałe", ...rest.map((r) => `- ${caseLine(r.c, t)}`), "");
@@ -249,14 +257,49 @@ function pageContent(r: Awaited<ReturnType<typeof renderFile>>): Content[] {
   return out;
 }
 
+/** Pictures in a mail smaller than this are logos in the signature, not photos of the problem. */
+const MIN_INLINE_IMAGE = 20 * 1024;
+/** A mail shows at most this many attachments as images (a PDF counts each page). */
+const MAX_MAIL_IMAGES = 8;
+
+/** An Outlook e-mail: headers and body as text, then its attachments (for `pages`: attachment numbers). */
+async function mailContent(data: Uint8Array, pages?: number[]): Promise<Content[]> {
+  const m = parseMsg(data);
+  const out: Content[] = [{ type: "text", text: `E-mail (.msg):\n${msgText(m)}` }];
+  const readable = m.attachments
+    .map((a, i) => ({ a, n: i + 1, mime: a.mime && a.mime !== "application/octet-stream" ? a.mime : mimeOf(a.name) }))
+    .filter((x) => x.a.data && (x.mime === "application/pdf" || x.mime.startsWith("image/") || x.mime.startsWith("text/")))
+    .filter((x) => !(x.a.inline && x.a.data!.byteLength < MIN_INLINE_IMAGE));
+  const want = pages?.length ? readable.filter((x) => pages.includes(x.n)) : readable;
+  let shown = 0;
+  const skipped: string[] = [];
+  for (const x of want) {
+    if (shown >= MAX_MAIL_IMAGES && !x.mime.startsWith("text/")) {
+      skipped.push(`${x.n}. ${x.a.name}`);
+      continue;
+    }
+    out.push({ type: "text", text: `## Załącznik ${x.n}: ${x.a.name}` });
+    const r = await renderFile(x.a.data!, x.mime, x.mime === "application/pdf" ? [1, 2, 3].slice(0, Math.max(1, MAX_MAIL_IMAGES - shown)) : undefined);
+    shown += r.images.length;
+    out.push(...pageContent(r));
+  }
+  if (skipped.length) out.push({ type: "text", text: `Nie pokazano załączników: ${skipped.join(", ")} – odczytasz je z parametrem pages (numery załączników).` });
+  return out;
+}
+
+async function fileContent(data: Uint8Array, mime: string, pages?: number[]): Promise<Content[]> {
+  if (mime === "application/vnd.ms-outlook") return mailContent(data, pages);
+  return pageContent(await renderFile(data, mime, pages));
+}
+
 tool(
   "read_document",
-  "Zwraca skan / dokument ze zdarzenia (obrazy stron + warstwa tekstowa) razem z kontekstem sprawy, do analizy. Po analizie wywołaj save_analysis.",
+  "Zwraca skan / dokument ze zdarzenia (obrazy stron + warstwa tekstowa; e-mail .msg: nagłówki, treść i załączniki) razem z kontekstem sprawy, do analizy. Po analizie wywołaj save_analysis.",
   {
     case_id: z.number().int(),
     event_id: z.string(),
     file_id: z.string().optional().describe("Domyślnie wszystkie pliki zdarzenia"),
-    pages: z.array(z.number().int()).optional().describe("Strony PDF (domyślnie pierwsze 10)"),
+    pages: z.array(z.number().int()).optional().describe("Strony PDF (domyślnie pierwsze 10); dla e-maila .msg – numery załączników"),
   },
   async ({ case_id, event_id, file_id, pages }) => {
     const db = await readDb();
@@ -275,7 +318,7 @@ tool(
     ];
     for (const f of files) {
       content.push({ type: "text", text: `## Plik ${f.name} [${f.id}]` });
-      content.push(...pageContent(await renderFile(await readStored(f), f.mime, pages)));
+      content.push(...(await fileContent(await readStored(f), f.mime, pages)));
     }
     return { content };
   },
@@ -288,7 +331,7 @@ tool(
   async ({ path: p, pages }) => {
     const abs = path.resolve(p);
     const data = new Uint8Array(await fs.readFile(abs));
-    return { content: [{ type: "text", text: `Plik ${abs}` }, ...pageContent(await renderFile(data, mimeOf(abs), pages))] };
+    return { content: [{ type: "text", text: `Plik ${abs}` }, ...(await fileContent(data, mimeOf(abs), pages))] };
   },
 );
 
@@ -364,7 +407,45 @@ tool(
   { case_id: z.number().int(), title: z.string(), body: z.string().describe("Pełna treść pisma, gotowa do wydruku") },
   async ({ case_id, title, body }) => {
     const d = await mutate((db) => ops.addDraft(db, case_id, title, body));
-    return text(`Zapisano projekt „${d.title}” [${d.id}]. Gdy użytkownik go wyśle, dodaj zdarzenie add_event z datą doręczenia.`);
+    return text(`Zapisano projekt „${d.title}” [${d.id}]. Gdy użytkownik go wyśle, zapisz to send_draft z datą złożenia lub doręczenia.`);
+  },
+);
+
+tool(
+  "send_draft",
+  "Użytkownik wysłał projekt pisma: dodaje je na oś czasu jako jego pismo (jak add_event, z terminem odpowiedzi) i oznacza projekt jako wysłany.",
+  {
+    case_id: z.number().int(),
+    draft_id: z.string(),
+    date: date.describe("Data złożenia lub doręczenia (od niej liczy się termin)"),
+    kind: z.enum(["submitted", "reminder", "appeal", "letter"]).optional().describe("Domyślnie letter"),
+    title: z.string().optional().describe("Domyślnie tytuł projektu"),
+    description: z.string().optional().describe("Krótkie streszczenie (pełna treść zostaje w projekcie)"),
+    method: z.enum(["in_person", "registered", "email", "epuap", "mailbox", "other"]).optional(),
+    reference: z.string().optional(),
+    files: z.array(z.string()).optional().describe("Np. skan z pieczątką, potwierdzenie nadania, wysłany mail .msg"),
+    reply_deadline: deadlineInput.optional(),
+    no_deadline: z.boolean().optional(),
+  },
+  async ({ case_id, draft_id, files, reply_deadline, no_deadline, ...rest }) => {
+    const refs = await storePaths(files);
+    try {
+      const { event, deadline } = await mutate((db) =>
+        ops.sendDraft(db, case_id, draft_id, {
+          ...(rest as Omit<ops.EventInput, "files" | "replyDeadline" | "kind">),
+          kind: rest.kind as ops.EventInput["kind"] | undefined,
+          files: refs,
+          replyDeadline: no_deadline ? null : (reply_deadline as ops.DeadlineInput | undefined),
+        }),
+      );
+      const lines = [`Projekt wysłany: zdarzenie ${event.id} (${event.date}) w sprawie #${case_id}.`];
+      if (deadline) lines.push(`Termin odpowiedzi: ${formatDate(deadline.due)} [${deadline.id}] (${deadline.source ?? deadline.basis}).`);
+      else if (!no_deadline) lines.push("Brak terminu odpowiedzi: kategoria nie ma reguły z regulaminu. Sprawdź search_rules albo zapytaj użytkownika i ustaw set_deadline.");
+      return text(lines.join("\n"));
+    } catch (err) {
+      for (const f of refs) await deleteStored(f);
+      throw err;
+    }
   },
 );
 

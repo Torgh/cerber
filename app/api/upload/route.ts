@@ -6,7 +6,7 @@ import { pdfText } from "@/lib/server/pdf";
 import type { FileRef } from "@/lib/types";
 
 /**
- * Changes with files, as multipart form data: "op" (addEvent | attachFiles | addRules), "args" (JSON)
+ * Changes with files, as multipart form data: "op" (addEvent | sendDraft | attachFiles | addRules), "args" (JSON)
  * and the files under "files".
  */
 export async function POST(req: Request) {
@@ -22,6 +22,9 @@ export async function POST(req: Request) {
       }
       if (op === "addEvent") {
         return await mutate((db) => ops.addEvent(db, args.caseId, { ...args.event, files: stored }));
+      }
+      if (op === "sendDraft") {
+        return await mutate((db) => ops.sendDraft(db, args.caseId, args.draftId, { ...args.event, files: stored }));
       }
       if (op === "attachFiles") {
         if (!stored.length) throw new ops.OpError("Nie wybrano plików.");

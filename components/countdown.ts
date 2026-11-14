@@ -32,6 +32,9 @@ export function countdownOf(c: Case, st: CaseStatus, today: string): Countdown {
     return { num: `+${-n.left}`, what: n.deadline.party === "me" ? "mój termin minął" : "dni po terminie", tone: "late", used: 1, barTone: "late" };
   if (st.flags.includes("to-analyze")) return { num: "skan", what: "do analizy", tone: "info" };
   if (st.flags.includes("no-deadline")) return { num: "?", what: "ustaw termin", tone: "soon" };
+  if (st.flags.includes("draft-unsent") && !(n?.state === "soon")) return { num: "✉", what: "projekt do wysłania", tone: "info" };
+  if (st.flags.includes("incomplete")) return { num: "½", what: "niepełna odpowiedź", tone: "soon" };
+  if (st.flags.includes("stalled")) return { num: String(st.idleDays), what: "dni bez ruchu", tone: "soon" };
   if (n) {
     const mine = n.deadline.party === "me";
     return {
