@@ -1,6 +1,6 @@
 /** Cases as Markdown text, for the MCP server. */
 import { daysBetween, formatDate, plDays } from "./dates";
-import { caseStatus, deadlineState, FLAG_LABEL, type DeadlineState } from "./status";
+import { answeredShare, caseStatus, deadlineState, FLAG_LABEL, type DeadlineState } from "./status";
 import {
   BASIS_LABEL,
   CATEGORY_LABEL,
@@ -20,7 +20,9 @@ export function deadlineText(s: DeadlineState): string {
     s.state === "done"
       ? daysBetween(d.due, d.doneAt!) > 0
         ? `spełniony ${formatDate(d.doneAt!)} – ${plDays(daysBetween(d.due, d.doneAt!))} PO TERMINIE`
-        : `✓ spełniony ${formatDate(d.doneAt!)}`
+        : s.incomplete
+          ? `½ odpowiedź ${formatDate(d.doneAt!)} w terminie, ale NIEPEŁNA (większość punktów bez odpowiedzi)`
+          : `✓ spełniony ${formatDate(d.doneAt!)}`
       : s.state === "dropped"
         ? "– nieaktualny"
         : s.state === "late"
@@ -50,6 +52,7 @@ export function caseText(c: Case, today: string): string {
     const meta = [e.method && METHOD_LABEL[e.method], e.reference && `sygn. ${e.reference}`].filter(Boolean).join(", ");
     lines.push(`- ${e.date} ${EVENT_ICON[e.kind]} ${EVENT_LABEL[e.kind]}: ${e.title}${meta ? ` (${meta})` : ""} [event ${e.id}]`);
     if (e.description) lines.push(`  ${e.description.replace(/\n/g, "\n  ")}`);
+    if (e.draftId) lines.push(`  📝 Treść: projekt [${e.draftId}]`);
     for (const f of e.files) lines.push(`  📎 ${f.name} [file ${f.id}]${f.pages ? `, ${f.pages} str.` : ""}`);
     if (e.analysis) {
       lines.push(`  🤖 Analiza: ${e.analysis.summary}`);
@@ -60,13 +63,26 @@ export function caseText(c: Case, today: string): string {
   }
   lines.push("", "## Terminy");
   if (!c.deadlines.length) lines.push("(brak)");
-  for (const d of [...c.deadlines].sort((a, b) => a.due.localeCompare(b.due))) lines.push(`- ${deadlineText(deadlineState(d, today))}`);
+  for (const d of [...c.deadlines].sort((a, b) => a.due.localeCompare(b.due))) lines.push(`- ${deadlineText(deadlineState(d, today, c))}`);
   if (st.flags.includes("no-deadline"))
     lines.push("", "⚑ Sprawa czeka na odpowiedź, ale nie ma terminu. Ustal go z regulaminu (search_rules) albo zapytaj użytkownika – nie zakładaj domyślnego.");
   if (st.toAnalyze.length) lines.push("", `⚑ Odpowiedzi do analizy (read_document): ${st.toAnalyze.join(", ")}`);
+  if (st.flags.includes("draft-unsent"))
+    lines.push("", "⚑ Projekt pisma czeka na wysłanie. Gdy użytkownik go wyśle, zapisz to send_draft (data złożenia / doręczenia) – powstanie pismo i termin odpowiedzi.");
+  if (st.flags.includes("incomplete")) {
+    const reply = [...c.events].reverse().find((e) => e.kind === "response");
+    const sh = answeredShare(reply?.analysis)!;
+    lines.push(
+      "",
+      `⚑ Ostatnia odpowiedź (${reply!.date}) jest niepełna: załatwia ${sh.answered} z ${sh.total} punktów${sh.missing.length ? `, bez odpowiedzi: ${sh.missing.join("; ")}` : ""}. ` +
+        "Zaproponuj ponaglenie o brakujące punkty (save_draft) albo, jeśli użytkownik uzna sprawę za załatwioną, zamknięcie.",
+    );
+  }
+  if (st.flags.includes("stalled"))
+    lines.push("", `⚑ Od ${plDays(st.idleDays!)} nic się nie dzieje, a sprawa nie ma terminu. Zapytaj użytkownika: zamknąć ją, czy ustalić następny krok (pismo, termin własny)?`);
   if (c.drafts.length) {
     lines.push("", "## Projekty pism");
-    for (const d of c.drafts) lines.push(`- [${d.id}] ${d.title} (${d.at.slice(0, 10)})`);
+    for (const d of c.drafts) lines.push(`- [${d.id}] ${d.title} (${d.at.slice(0, 10)})${d.sentAt ? ` – wysłany ${d.sentAt} [event ${d.sentEventId}]` : " – NIEWYSŁANY"}`);
   }
   return lines.join("\n");
 }

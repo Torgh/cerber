@@ -84,9 +84,9 @@ describe("deadlines", () => {
     const soon = ops.createCase(db, { title: "S", category: "other" });
     ops.addEvent(db, soon.id, { date: "2026-11-10", kind: "submitted", replyDeadline: { days: 3, basis: "manual" } });
     const t = "2026-11-11";
-    expect(caseRank(draft, caseStatus(draft, t))).toBe(4);
+    expect(caseRank(draft, caseStatus(draft, t))).toBe(5);
     expect(caseRank(closed, caseStatus(closed, t))).toBe(9);
-    expect(caseRank(soon, caseStatus(soon, t))).toBe(2);
+    expect(caseRank(soon, caseStatus(soon, t))).toBe(3);
   });
 });
 

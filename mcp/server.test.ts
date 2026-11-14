@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { samplePdf } from "../lib/testUtils";
+import { sampleMsg, samplePdf } from "../lib/testUtils";
 
 let dir = "";
 let client: Client;
@@ -75,6 +75,44 @@ describe("MCP server", () => {
     const overview = await call("get_overview");
     expect(overview.text).toContain("Przeciek");
     expect((await call("get_case", { case_id: 1 })).text).toContain("Analiza: Obiecuje naprawę.");
+  });
+
+  it("reads an Outlook e-mail with its attachments, and sends a draft", async () => {
+    const mail = path.join(dir, "zgloszenie.msg");
+    fs.writeFileSync(
+      mail,
+      sampleMsg({
+        subject: "Wniosek o dokumenty",
+        body: "Proszę o kopie uchwał.",
+        fromEmail: "ja@example.com",
+        date: "2026-08-13T16:47:01Z",
+        attachments: [
+          { name: "image001.png", data: new Uint8Array(50), contentId: "logo" },
+          { name: "pismo.pdf", data: samplePdf("Pismo L.dz. 7415") },
+        ],
+      }),
+    );
+    await call("create_case", { title: "Dokumenty", category: "documents" });
+    const sent = await call("add_event", { case_id: 2, date: "2026-08-13", kind: "submitted", files: [mail], no_deadline: true });
+    const eventId = /zdarzenie (\S+) /.exec(sent.text)![1];
+    const doc = await call("read_document", { case_id: 2, event_id: eventId });
+    expect(doc.isError).toBe(false);
+    expect(doc.text).toContain("Temat: Wniosek o dokumenty");
+    expect(doc.text).toContain("Data: 13.08.2026, 18:47:01");
+    expect(doc.text).toContain("Proszę o kopie uchwał.");
+    expect(doc.text).toContain("Załącznik 2: pismo.pdf");
+    expect(doc.text).toContain("Pismo L.dz. 7415");
+    expect(doc.text).not.toContain("Załącznik 1:"); // the signature logo is skipped
+    expect(doc.images).toBe(1);
+    expect((await call("read_scan", { path: mail, pages: [1] })).images).toBe(0);
+
+    const draft = await call("save_draft", { case_id: 2, title: "Ponaglenie", body: "Szanowni Państwo…" });
+    const draftId = /\[(\S+)\]/.exec(draft.text)![1];
+    expect((await call("get_overview")).text).toContain("✉ Projekty pism do wysłania");
+    const done = await call("send_draft", { case_id: 2, draft_id: draftId, date: "2026-11-14", kind: "reminder", reply_deadline: { days: 14, basis: "manual" } });
+    expect(done.text).toContain("Termin odpowiedzi: 30 lis 2026");
+    expect((await call("get_case", { case_id: 2 })).text).toContain("– wysłany 2026-11-14");
+    expect((await call("send_draft", { case_id: 2, draft_id: draftId, date: "2026-11-15" })).isError).toBe(true);
   });
 
   it("reports errors instead of crashing", async () => {

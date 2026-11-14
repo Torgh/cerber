@@ -1,7 +1,7 @@
 "use client";
 import { Fragment, useState } from "react";
 import { daysBetween, formatDate, plDays } from "@/lib/dates";
-import { caseStatus, deadlineState, type CaseStatus, type DeadlineState } from "@/lib/status";
+import { answeredShare, caseStatus, deadlineState, isIncomplete, type CaseStatus, type DeadlineState } from "@/lib/status";
 import {
   BASIS_LABEL,
   CATEGORY_LABEL,
@@ -11,6 +11,7 @@ import {
   type Case,
   type CaseEvent,
   type Deadline,
+  type Draft,
   type EventKind,
 } from "@/lib/types";
 import { action, fileUrl } from "./api";
@@ -21,7 +22,7 @@ import * as I from "./icons";
 
 type Dialog =
   | { kind: "case" }
-  | { kind: "event"; event?: CaseEvent; initialKind?: EventKind }
+  | { kind: "event"; event?: CaseEvent; initialKind?: EventKind; draft?: Draft }
   | { kind: "deadline"; deadline?: Deadline }
   | null;
 
@@ -217,6 +218,28 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
         text: rule ? `Regulamin: ${plDays(rule.days)} (${rule.source}).` : "Regulamin nie podaje terminu dla tej kategorii – ustaw go ręcznie albo poproś Claude o sprawdzenie.",
         primary: { label: "Ustaw termin", run: () => setDialog({ kind: "deadline" }) },
       };
+    const unsent = st.unsent[st.unsent.length - 1];
+    if (unsent)
+      return {
+        tone: "normal",
+        kicker: "Projekt czeka",
+        title: "Wyślij projekt pisma",
+        text: `„${unsent.title}” (${formatDate(unsent.at.slice(0, 10))}). Gdy go złożysz lub wyślesz, zaznacz to – pismo trafi na oś czasu z terminem odpowiedzi.`,
+        primary: { label: "Otwórz projekt", run: () => showDraft(unsent.id) },
+        secondary: { label: "Wysłane", run: () => setDialog({ kind: "event", draft: unsent }) },
+      };
+    if (st.flags.includes("incomplete")) {
+      const reply = [...c.events].reverse().find((e) => e.kind === "response")!;
+      const sh = answeredShare(reply.analysis)!;
+      return {
+        tone: "normal",
+        kicker: "Niepełna odpowiedź",
+        title: `Załatwiono ${sh.answered} z ${sh.total} punktów`,
+        text: `Odpowiedź z ${formatDate(reply.date)} przyszła, ale pomija większość Twoich punktów.${reply.analysis?.nextStep ? ` ${reply.analysis.nextStep}` : ""}`,
+        primary: ask(`Przygotuj ponaglenie w sprawie #${c.id} (Cerber) o punkty, na które spółdzielnia nie odpowiedziała.`, "incomplete"),
+        secondary: { label: "Zamknij sprawę", run: () => setDialog({ kind: "case" }) },
+      };
+    }
     if (c.stage === "draft")
       return {
         tone: "normal",
@@ -229,7 +252,7 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
     if (c.stage === "answered")
       return {
         tone: "normal",
-        kicker: "Po odpowiedzi",
+        kicker: st.idleDays ? `Bez ruchu od ${plDays(st.idleDays)}` : "Po odpowiedzi",
         title: lastAnalysis?.nextStep ? "Zdecyduj o dalszym kroku" : "Sprawa załatwiona?",
         text: lastAnalysis?.nextStep ?? "Zamknij sprawę albo dodaj kolejne pismo.",
         primary: { label: "Zamknij sprawę", run: () => setDialog({ kind: "case" }) },
@@ -289,11 +312,19 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
             {met.map((d) => {
               const late = daysBetween(d.due, d.doneAt!);
               return (
-                <div key={d.id} style={{ marginTop: 8 }}>
+                <div key={d.id} style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {late > 0 ? <span className="chip late">odpowiedź {plDays(late)} po terminie</span> : <span className="chip ok">w terminie</span>}
+                  {d.type === "reply" && isIncomplete(e.analysis) && <span className="chip soon">niepełna odpowiedź</span>}
                 </div>
               );
             })}
+            {e.draftId && c.drafts.some((d) => d.id === e.draftId) && (
+              <div className="sub">
+                <button className="btn link" onClick={() => showDraft(e.draftId!)}>
+                  Treść pisma: projekt „{c.drafts.find((d) => d.id === e.draftId)!.title}”
+                </button>
+              </div>
+            )}
             {e.analysis ? (
               <AnalysisBox e={e} />
             ) : (
@@ -362,7 +393,7 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
     });
   items.sort((a, b) => a.date.localeCompare(b.date) || a.order - b.order);
 
-  const deadlines = c.deadlines.map((d) => deadlineState(d, today)).sort((a, b) => a.deadline.due.localeCompare(b.deadline.due));
+  const deadlines = c.deadlines.map((d) => deadlineState(d, today, c)).sort((a, b) => a.deadline.due.localeCompare(b.deadline.due));
   const lastEvent = c.events[c.events.length - 1];
 
   return (
@@ -467,12 +498,12 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
                       {s.deadline.party === "me" ? "Ja: " : ""}
                       {s.deadline.label}
                     </span>
-                    <span className={`n tone-${s.state === "late" ? "late" : s.state === "soon" ? "soon" : s.state === "done" ? "ok" : "muted"}`}>
-                      {s.state === "done" ? "✓" : s.state === "dropped" ? "—" : s.left < 0 ? `+${-s.left}` : s.left}
+                    <span className={`n tone-${s.state === "late" ? "late" : s.state === "soon" || s.incomplete ? "soon" : s.state === "done" ? "ok" : "muted"}`}>
+                      {s.incomplete ? "½" : s.state === "done" ? "✓" : s.state === "dropped" ? "—" : s.left < 0 ? `+${-s.left}` : s.left}
                     </span>
                     <span className="src">
                       do {formatDate(s.deadline.due)} · {s.deadline.source ?? BASIS_LABEL[s.deadline.basis]}
-                      {s.deadline.doneAt ? ` · spełniony ${formatDate(s.deadline.doneAt)}` : ""}
+                      {s.deadline.doneAt ? ` · ${s.incomplete ? "odpowiedź niepełna" : "spełniony"} ${formatDate(s.deadline.doneAt)}` : ""}
                       {s.deadline.dropped ? " · nieaktualny" : ""}
                     </span>
                   </button>
@@ -504,8 +535,8 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
                   >
                     <summary>
                       <strong style={{ flex: 1 }}>{d.title}</strong>
-                      <span className="muted" style={{ fontSize: 12 }}>
-                        {formatDate(d.at.slice(0, 10))}
+                      <span className={d.sentAt ? "muted" : "tone-soon"} style={{ fontSize: 12 }}>
+                        {d.sentAt ? `wysłany ${formatDate(d.sentAt)}` : `${formatDate(d.at.slice(0, 10))} · do wysłania`}
                       </span>
                     </summary>
                     <pre>{d.body}</pre>
@@ -513,6 +544,11 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
                       <button className="btn small" onClick={() => copy(d.body, d.id)}>
                         <I.Copy size={14} /> {copied === d.id ? "Skopiowano" : "Kopiuj"}
                       </button>
+                      {!d.sentAt && (
+                        <button className="btn small" onClick={() => setDialog({ kind: "event", draft: d })}>
+                          <I.Send size={14} /> Wysłane
+                        </button>
+                      )}
                       <button
                         className="btn small danger"
                         onClick={async () => {
@@ -564,6 +600,7 @@ export default function CaseView({ app, c, onBack }: { app: AppState; c: Case; o
           c={c}
           event={dialog.event}
           initialKind={dialog.initialKind}
+          draft={dialog.draft}
           rule={rule}
           today={today}
           onClose={() => setDialog(null)}

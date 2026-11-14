@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { formatDate } from "@/lib/dates";
 import { fold } from "@/lib/rules";
-import type { CaseStatus } from "@/lib/status";
+import { ACTION_FLAGS, type CaseStatus } from "@/lib/status";
 import { CATEGORY_LABEL, STAGE_LABEL, type Case } from "@/lib/types";
 import { countdownOf } from "./countdown";
 import { Flask } from "./icons";
@@ -14,8 +14,7 @@ interface Row {
 
 function group(r: Row): "act" | "open" | "closed" {
   if (r.c.stage === "closed") return "closed";
-  const f = r.s.flags;
-  return f.includes("overdue") || f.includes("my-overdue") || f.includes("to-analyze") || f.includes("no-deadline") ? "act" : "open";
+  return r.s.flags.some((f) => ACTION_FLAGS.includes(f)) ? "act" : "open";
 }
 
 const GROUP_LABEL = { act: "Wymaga działania", open: "W toku", closed: "Zamknięte" };

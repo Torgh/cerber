@@ -18,6 +18,7 @@ import {
   type Deadline,
   type DeadlineBasis,
   type DeadlineRule,
+  type Draft,
   type EventKind,
   type Method,
   type Outcome,
@@ -144,6 +145,7 @@ export function EventForm({
   rule,
   today,
   initialKind,
+  draft,
   onClose,
   onSaved,
 }: {
@@ -152,12 +154,14 @@ export function EventForm({
   rule?: DeadlineRule;
   today: string;
   initialKind?: EventKind;
+  /** Marking this draft as sent: the new event is my letter with its text. */
+  draft?: Draft;
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [kind, setKind] = useState<EventKind>(event?.kind ?? initialKind ?? (c.events.length ? "response" : "submitted"));
+  const [kind, setKind] = useState<EventKind>(event?.kind ?? initialKind ?? (draft ? "letter" : c.events.length ? "response" : "submitted"));
   const [date, setDate] = useState(event?.date ?? today);
-  const [title, setTitle] = useState(event?.title ?? "");
+  const [title, setTitle] = useState(event?.title ?? draft?.title ?? "");
   const [description, setDescription] = useState(event?.description ?? "");
   const [method, setMethod] = useState<Method | "">(event?.method ?? "");
   const [reference, setReference] = useState(event?.reference ?? "");
@@ -200,18 +204,21 @@ export function EventForm({
                 : isValidDate(due)
                   ? { due, basis, source }
                   : null;
-        await upload("addEvent", { caseId: c.id, event: { date, kind, title, description, method: method || undefined, reference, replyDeadline } }, files);
+        const ev = { date, kind, title, description, method: method || undefined, reference, replyDeadline };
+        if (draft) await upload("sendDraft", { caseId: c.id, draftId: draft.id, event: ev }, files);
+        else await upload("addEvent", { caseId: c.id, event: ev }, files);
       }
       onSaved();
     });
 
   return (
-    <Modal title={event ? "Edytuj zdarzenie" : "Nowe zdarzenie"} onClose={onClose}>
+    <Modal title={event ? "Edytuj zdarzenie" : draft ? "Wysłane pismo" : "Nowe zdarzenie"} onClose={onClose}>
+      {draft && <p className="muted" style={{ marginTop: 0 }}>Pismo z projektu „{draft.title}” trafi na oś czasu, a projekt zostanie oznaczony jako wysłany.</p>}
       <div className="row">
         <label className="field">
           <span>Rodzaj</span>
           <select value={kind} disabled={!!event} onChange={(e) => setKind(e.target.value as EventKind)}>
-            {EVENT_KINDS.map((k) => (
+            {(draft ? OUTGOING_KINDS : EVENT_KINDS).map((k) => (
               <option key={k} value={k}>
                 {EVENT_LABEL[k]}
               </option>
@@ -252,7 +259,7 @@ export function EventForm({
       </label>
       <label className="field">
         <span>{kind === "response" ? "Skan odpowiedzi (PDF, zdjęcia)" : "Załączniki (skan pisma, potwierdzenie nadania…)"}</span>
-        <input type="file" multiple accept=".pdf,image/*,.txt,.doc,.docx,.odt" onChange={(e) => setFiles([...(e.target.files ?? [])])} />
+        <input type="file" multiple accept=".pdf,image/*,.txt,.doc,.docx,.odt,.msg" onChange={(e) => setFiles([...(e.target.files ?? [])])} />
       </label>
       {outgoing && !event && (
         <fieldset>
