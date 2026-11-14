@@ -212,18 +212,47 @@ function fileTime(v: DataView | undefined): string | undefined {
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
+const ENTITIES: Record<string, string> = { nbsp: " ", lt: "<", gt: ">", quot: '"', amp: "&", apos: "'" };
+/** Elements whose content is not text of the mail. */
+const SKIP_CONTENT = new Set(["style", "script", "head", "title"]);
+/** Elements that end a line. */
+const LINE_BREAK = new Set(["br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6"]);
+
+/**
+ * The text of an HTML mail body, for Claude to read – never rendered as HTML. One pass over the
+ * characters: a tag is everything from "<" to the next ">", so no part of a tag can survive, and
+ * entities are decoded once, after the tags are gone.
+ */
 export function htmlToText(html: string): string {
-  return html
-    .replace(/<(style|script|head)[\s\S]*?<\/\1>/gi, "")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|tr|li|h\d)>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
-    .replace(/&amp;/g, "&")
+  let out = "";
+  let skipping: string | null = null;
+  let i = 0;
+  while (i < html.length) {
+    const ch = html[i];
+    if (ch !== "<") {
+      if (!skipping) out += ch;
+      i++;
+      continue;
+    }
+    const end = html.indexOf(">", i + 1);
+    if (end < 0) break; // an unclosed tag: drop the rest
+    const tag = html.slice(i + 1, end).trim();
+    i = end + 1;
+    const closing = tag.startsWith("/");
+    const name = (closing ? tag.slice(1) : tag).split(/[\s/]/, 1)[0].toLowerCase();
+    if (skipping) {
+      if (closing && name === skipping) skipping = null;
+      continue;
+    }
+    if (!closing && SKIP_CONTENT.has(name) && !tag.endsWith("/")) skipping = name;
+    else if (LINE_BREAK.has(name) && (closing || name === "br")) out += "\n";
+  }
+  return out
+    .replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (m, e: string) => {
+      if (e[0] !== "#") return ENTITIES[e.toLowerCase()] ?? m;
+      const code = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : Number(e.slice(1));
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
+    })
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

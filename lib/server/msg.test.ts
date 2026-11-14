@@ -55,6 +55,16 @@ describe("Outlook .msg", () => {
 
   it("rejects other files", () => {
     expect(() => new CompoundFile(samplePdf("x"))).toThrow(".msg");
-    expect(htmlToText("a<br>b &lt;c&gt; &#261;")).toBe("a\nb <c> ą");
+    expect(htmlToText("a<br>b &lt;c&gt; &#261;&#x105; &bogus; &#0;")).toBe("a\nb <c> ąą &bogus; &#0;");
+  });
+
+  it("leaves no tags behind in HTML bodies", () => {
+    // Nested and broken tags that a regex replacement would leave half-stripped.
+    expect(htmlToText("<scr<script>ipt>alert(1)</script>ok")).toBe("ipt>alert(1)ok");
+    expect(htmlToText("<p>A</p><script type='x'>bad()</script><SCRIPT>bad()</SCRIPT>B")).toBe("A\nB");
+    expect(htmlToText("<head><title>T</title></head>Treść<br/>dalej")).toBe("Treść\ndalej");
+    expect(htmlToText("tekst <niedomknięty")).toBe("tekst");
+    expect(htmlToText("&amp;lt;script&amp;gt;")).toBe("&lt;script&gt;"); // decoded once, not twice
+    expect(htmlToText("<img src=x onerror=alert(1)>Zdjęcie")).toBe("Zdjęcie");
   });
 });
