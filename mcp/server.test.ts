@@ -115,6 +115,56 @@ describe("MCP server", () => {
     expect((await call("send_draft", { case_id: 2, draft_id: draftId, date: "2026-11-15" })).isError).toBe(true);
   });
 
+  it("keeps people, links letters, moves promises and reports", async () => {
+    const member = await call("save_person", { name: "Anna Nowak", role: "member" });
+    const memberId = /\[(\S+)\]/.exec(member.text)![1];
+    const proxy = await call("save_person", { name: "Jan Nowak", role: "proxy", proxy_for: memberId, proxy_scope: "sprawy lokalu" });
+    const proxyId = /\[(\S+)\]/.exec(proxy.text)![1];
+    expect((await call("get_people")).text).toContain("Jan Nowak (pełnomocnik – Anna Nowak, zakres: sprawy lokalu)");
+
+    await call("create_case", { title: "Szlabany", category: "defect" });
+    const letter = await call("add_event", { case_id: 3, date: "2026-08-13", kind: "letter", sender_id: proxyId, registered_date: "2026-08-14", reply_deadline: { days: 42, basis: "manual" } });
+    const letterId = /zdarzenie (\S+) /.exec(letter.text)![1];
+    const shared = await call("share_event", { case_id: 3, event_id: letterId, other_case_id: 2, no_deadline: true });
+    expect(shared.text).toContain("Pismo dodane do sprawy #2");
+    const reply = await call("add_event", { case_id: 3, date: "2026-09-17", kind: "response", reference: "OS/4491/TM", letter_date: "2026-09-11" });
+    const replyId = /zdarzenie (\S+) /.exec(reply.text)![1];
+    const first = await call("save_analysis", { case_id: 3, event_id: replyId, summary: "Ankieta.", commitments: [{ label: "Ankieta", due: "2026-12-31" }], formal: { signer: "admin", appeal_instruction: false } });
+    expect(first.text).toContain("Nowe terminy: Ankieta");
+    const caseText = (await call("get_case", { case_id: 3 })).text;
+    const ankieta = /\[(\S+)\] Ankieta/.exec(caseText)![1];
+    expect(caseText).toContain("nadawca: Jan Nowak");
+    expect(caseText).toContain("spółdzielnia datuje je na 14 sie 2026");
+    expect(caseText).toContain("To samo pismo także w: #2");
+    expect(caseText).toContain("BEZ pouczenia o odwołaniu");
+
+    const moved = await call("set_deadline", { case_id: 3, deadline_id: ankieta, due: "2027-03-31", moved_on: "2027-01-10", earlier: [{ due: "2022-08-31", moved_on: "2022-10-14" }] });
+    expect(moved.text).toContain("31 sie 2022 → 31 gru 2026 → 31 mar 2027");
+    const reply2 = await call("add_event", { case_id: 3, date: "2027-04-02", kind: "response" });
+    const reply2Id = /zdarzenie (\S+) /.exec(reply2.text)![1];
+    expect((await call("save_analysis", { case_id: 3, event_id: reply2Id, summary: "Znowu.", commitments: [{ label: "Ankieta", due: "2027-06-30", replaces: ankieta }] })).text).toContain(
+      "Przesunięte obietnice: Ankieta",
+    );
+    expect((await call("link_cases", { case_id: 3, other_case_id: 1 })).text).toContain("Powiązano");
+    expect((await call("link_cases", { case_id: 3, other_case_id: 1, unlink: true })).text).toContain("Rozłączono");
+
+    const st = await call("get_stats");
+    expect(st.text).toContain("## Według sygnatury");
+    expect(st.text).toContain("TM:");
+    expect(st.text).toContain("przesunięcia: 3");
+    expect((await call("get_overview")).text).toContain("Osoby: Anna Nowak (członek spółdzielni)");
+    const report = await call("export_case", { case_id: 3 });
+    expect(report.text).toContain("# Sprawa #3: Szlabany");
+    expect(report.text).toContain("Jan Nowak (pełnomocnik – Anna Nowak, zakres: sprawy lokalu)");
+
+    const dup = await call("add_event", { case_id: 1, date: "2026-09-17", kind: "response" });
+    const dupId = /zdarzenie (\S+) /.exec(dup.text)![1];
+    expect((await call("link_events", { case_id: 3, event_id: replyId, other_case_id: 1, other_event_id: dupId })).text).toContain("Połączono");
+    expect((await call("update_event", { case_id: 3, event_id: replyId, letter_date: "", sender_id: "" })).isError).toBe(false);
+    expect((await call("save_person", { person_id: proxyId, delete: true })).text).toContain("Usunięto Jan Nowak");
+    expect((await call("save_person", { delete: true })).isError).toBe(true);
+  });
+
   it("reports errors instead of crashing", async () => {
     const r = await call("get_case", { case_id: 404 });
     expect(r.isError).toBe(true);

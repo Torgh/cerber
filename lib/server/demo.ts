@@ -2,6 +2,7 @@
 import sharp from "sharp";
 import { addDemo, demoScanLines, removeDemo } from "../demo";
 import { today } from "../dates";
+import { unreferenced } from "../ops";
 import type { Case, FileRef } from "../types";
 import { mutate } from "./db";
 import { deleteStored, storeFile } from "./files";
@@ -83,7 +84,7 @@ export async function loadDemo(): Promise<Case[]> {
 }
 
 export async function unloadDemo(): Promise<number> {
-  const files = await mutate((db) => removeDemo(db));
+  const files = await mutate((db) => unreferenced(db, removeDemo(db)));
   for (const f of files) await deleteStored(f);
   return files.length;
 }

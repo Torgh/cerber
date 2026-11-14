@@ -23,7 +23,10 @@ import {
   type Method,
   type Outcome,
   type Party,
+  type Person,
+  type PersonRole,
   type Stage,
+  ROLE_LABEL,
 } from "@/lib/types";
 import { action, upload } from "./api";
 
@@ -146,6 +149,7 @@ export function EventForm({
   today,
   initialKind,
   draft,
+  people = [],
   onClose,
   onSaved,
 }: {
@@ -154,6 +158,7 @@ export function EventForm({
   rule?: DeadlineRule;
   today: string;
   initialKind?: EventKind;
+  people?: Person[];
   /** Marking this draft as sent: the new event is my letter with its text. */
   draft?: Draft;
   onClose: () => void;
@@ -165,6 +170,10 @@ export function EventForm({
   const [description, setDescription] = useState(event?.description ?? "");
   const [method, setMethod] = useState<Method | "">(event?.method ?? "");
   const [reference, setReference] = useState(event?.reference ?? "");
+  const [letterDate, setLetterDate] = useState(event?.letterDate ?? "");
+  const [registeredDate, setRegisteredDate] = useState(event?.registeredDate ?? "");
+  const [dateApprox, setDateApprox] = useState(!!event?.dateApprox);
+  const [senderId, setSenderId] = useState(event?.senderId ?? "");
   const [files, setFiles] = useState<File[]>([]);
   const [mode, setMode] = useState<DeadlineMode>(rule ? "rule" : "days");
   const [days, setDays] = useState("");
@@ -185,10 +194,16 @@ export function EventForm({
             ? due
             : null;
 
+  const dates = {
+    letterDate: kind === "response" && isValidDate(letterDate) ? letterDate : null,
+    registeredDate: outgoing && isValidDate(registeredDate) ? registeredDate : null,
+    dateApprox,
+    senderId: outgoing && senderId ? senderId : null,
+  };
   const save = () =>
     run(async () => {
       if (event) {
-        await action("updateEvent", { caseId: c.id, eventId: event.id, patch: { date, title, description, method: method || null, reference } });
+        await action("updateEvent", { caseId: c.id, eventId: event.id, patch: { date, title, description, method: method || null, reference, ...dates } });
         if (files.length) await upload("attachFiles", { caseId: c.id, eventId: event.id }, files);
       } else {
         const replyDeadline = !outgoing
@@ -204,7 +219,19 @@ export function EventForm({
                 : isValidDate(due)
                   ? { due, basis, source }
                   : null;
-        const ev = { date, kind, title, description, method: method || undefined, reference, replyDeadline };
+        const ev = {
+          date,
+          kind,
+          title,
+          description,
+          method: method || undefined,
+          reference,
+          replyDeadline,
+          letterDate: dates.letterDate ?? undefined,
+          registeredDate: dates.registeredDate ?? undefined,
+          dateApprox: dates.dateApprox || undefined,
+          senderId: dates.senderId ?? undefined,
+        };
         if (draft) await upload("sendDraft", { caseId: c.id, draftId: draft.id, event: ev }, files);
         else await upload("addEvent", { caseId: c.id, event: ev }, files);
       }
@@ -253,6 +280,38 @@ export function EventForm({
           </label>
         </div>
       )}
+      {(outgoing || kind === "response") && (
+        <div className="row">
+          {kind === "response" ? (
+            <label className="field">
+              <span>Data na piśmie (gdy inna)</span>
+              <input type="date" value={letterDate} onChange={(e) => setLetterDate(e.target.value)} />
+            </label>
+          ) : (
+            <label className="field">
+              <span>Spółdzielnia datuje je na (gdy inaczej)</span>
+              <input type="date" value={registeredDate} onChange={(e) => setRegisteredDate(e.target.value)} />
+            </label>
+          )}
+          {outgoing && people.length > 0 && (
+            <label className="field">
+              <span>Nadawca</span>
+              <select value={senderId} onChange={(e) => setSenderId(e.target.value)}>
+                <option value="">—</option>
+                {people.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({ROLE_LABEL[p.role]})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
+      )}
+      <label className="radio">
+        <input type="checkbox" checked={dateApprox} onChange={(e) => setDateApprox(e.target.checked)} />
+        Data przybliżona (np. pisma brak, datę znam z odpowiedzi)
+      </label>
       <label className="field">
         <span>Treść / notatka</span>
         <textarea rows={4} value={description} onChange={(e) => setDescription(e.target.value)} />
@@ -347,14 +406,18 @@ export function DeadlineForm({
   const [basis, setBasis] = useState<DeadlineBasis>(deadline?.basis ?? "manual");
   const [source, setSource] = useState(deadline?.source ?? "");
   const [isReply, setIsReply] = useState((deadline?.type ?? (lastOutgoing ? "reply" : "task")) === "reply");
+  const [moved, setMoved] = useState(false);
+  const [movedOn, setMovedOn] = useState(today);
   const { busy, error, run } = useSubmit();
   const from = c.events.find((e) => e.id === fromEventId)?.date ?? today;
   const computed = Number(days) > 0 ? deadlineFrom(from, Number(days)) : isValidDate(due) ? due : null;
+  const changesDue = !!deadline && !!computed && computed !== deadline.due;
 
   const save = () =>
     run(async () => {
       if (deadline) {
-        await action("updateDeadline", { caseId: c.id, deadlineId: deadline.id, patch: { label, due: computed ?? deadline.due, basis, source } });
+        const move = changesDue && moved && isValidDate(movedOn) ? { movedOn } : {};
+        await action("updateDeadline", { caseId: c.id, deadlineId: deadline.id, patch: { label, due: computed ?? deadline.due, basis, source, ...move } });
       } else {
         await action("addDeadline", {
           caseId: c.id,
@@ -438,6 +501,25 @@ export function DeadlineForm({
         </label>
       )}
       {computed && <div className="muted">Termin: {formatDate(computed)}</div>}
+      {changesDue && deadline?.party === "coop" && (
+        <div className="row" style={{ alignItems: "end" }}>
+          <label className="radio" style={{ flex: "2 1 220px" }}>
+            <input type="checkbox" checked={moved} onChange={(e) => setMoved(e.target.checked)} />
+            Spółdzielnia przesunęła termin (stary {formatDate(deadline.due)} zostaje w historii)
+          </label>
+          {moved && (
+            <label className="field">
+              <span>Przesunięty dnia</span>
+              <input type="date" value={movedOn} onChange={(e) => setMovedOn(e.target.value)} />
+            </label>
+          )}
+        </div>
+      )}
+      {!!deadline?.history?.length && (
+        <div className="muted">
+          Wcześniej obiecane: {deadline.history.map((h) => `${formatDate(h.due)}${h.movedOn > h.due ? " (minął)" : ""}`).join(" → ")} → {formatDate(deadline.due)}
+        </div>
+      )}
       {error && <div className="error">{error}</div>}
       <div className="actions">
         {deadline && (
@@ -475,6 +557,128 @@ export function DeadlineForm({
         </button>
         <button className="btn primary" disabled={busy || !label.trim() || (!deadline && !computed)} onClick={save}>
           Zapisz
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+export function PersonForm({ person, people, onClose, onSaved }: { person?: Person; people: Person[]; onClose: () => void; onSaved: () => void }) {
+  const [name, setName] = useState(person?.name ?? "");
+  const [role, setRole] = useState<PersonRole>(person?.role ?? "member");
+  const [proxyFor, setProxyFor] = useState(person?.proxyFor ?? "");
+  const [proxyScope, setProxyScope] = useState(person?.proxyScope ?? "");
+  const [note, setNote] = useState(person?.note ?? "");
+  const { busy, error, run } = useSubmit();
+  const members = people.filter((p) => p.id !== person?.id);
+  const save = () =>
+    run(async () => {
+      await action("savePerson", { id: person?.id, name, role, proxyFor: role === "proxy" ? proxyFor || null : null, proxyScope: role === "proxy" ? proxyScope : null, note });
+      onSaved();
+    });
+  return (
+    <Modal title={person ? person.name : "Nowa osoba"} onClose={onClose}>
+      <div className="row">
+        <label className="field">
+          <span>Imię i nazwisko</span>
+          <input type="text" value={name} autoFocus onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Rola</span>
+          <select value={role} onChange={(e) => setRole(e.target.value as PersonRole)}>
+            {(Object.keys(ROLE_LABEL) as PersonRole[]).map((r) => (
+              <option key={r} value={r}>
+                {ROLE_LABEL[r]}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {role === "proxy" && (
+        <>
+          <label className="field">
+            <span>Pełnomocnik członka</span>
+            <select value={proxyFor} onChange={(e) => setProxyFor(e.target.value)}>
+              <option value="">—</option>
+              {members.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Zakres pełnomocnictwa (jak w dokumencie)</span>
+            <input type="text" value={proxyScope} placeholder="np. czynności administracyjne dot. lokalu nr 3" onChange={(e) => setProxyScope(e.target.value)} />
+          </label>
+        </>
+      )}
+      <label className="field">
+        <span>Notatka</span>
+        <input type="text" value={note} onChange={(e) => setNote(e.target.value)} />
+      </label>
+      {error && <div className="error">{error}</div>}
+      <div className="actions">
+        {person && (
+          <button
+            className="btn danger spacer"
+            onClick={() =>
+              confirm(`Usunąć ${person.name}? Pisma zostaną bez nadawcy.`) &&
+              run(async () => {
+                await action("deletePerson", { id: person.id });
+                onSaved();
+              })
+            }
+          >
+            Usuń
+          </button>
+        )}
+        <button className="btn" onClick={onClose}>
+          Anuluj
+        </button>
+        <button className="btn primary" disabled={busy || !name.trim()} onClick={save}>
+          Zapisz
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Puts a letter into another case too, or just links two cases. */
+export function LinkForm({ c, cases, event, onClose, onSaved }: { c: Case; cases: Case[]; event?: CaseEvent; onClose: () => void; onSaved: () => void }) {
+  const others = cases.filter((x) => x.id !== c.id && !(event?.linkId && x.events.some((e) => e.linkId === event.linkId)));
+  const [otherId, setOtherId] = useState(others[0]?.id ?? 0);
+  const { busy, error, run } = useSubmit();
+  const save = () =>
+    run(async () => {
+      if (event) await action("shareEvent", { caseId: c.id, eventId: event.id, otherCaseId: otherId });
+      else await action("linkCases", { caseId: c.id, otherCaseId: otherId });
+      onSaved();
+    });
+  return (
+    <Modal title={event ? "To samo pismo w innej sprawie" : "Powiąż sprawę"} onClose={onClose}>
+      <p className="muted" style={{ marginTop: 0 }}>
+        {event
+          ? `„${event.title}” trafi też do wybranej sprawy, z tymi samymi plikami. Poprawki daty, sygnatury czy plików zmienią oba miejsca; analiza zostaje osobna w każdej sprawie.`
+          : "Sprawy będą widoczne jedna przy drugiej."}
+      </p>
+      <label className="field">
+        <span>Sprawa</span>
+        <select value={otherId} onChange={(e) => setOtherId(Number(e.target.value))}>
+          {others.map((x) => (
+            <option key={x.id} value={x.id}>
+              #{x.id} {x.title}
+            </option>
+          ))}
+        </select>
+      </label>
+      {error && <div className="error">{error}</div>}
+      <div className="actions">
+        <button className="btn" onClick={onClose}>
+          Anuluj
+        </button>
+        <button className="btn primary" disabled={busy || !otherId} onClick={save}>
+          {event ? "Dodaj do sprawy" : "Powiąż"}
         </button>
       </div>
     </Modal>

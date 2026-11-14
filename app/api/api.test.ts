@@ -5,6 +5,7 @@ import { mutate } from "@/lib/server/db";
 import type { Case, Db } from "@/lib/types";
 import { POST as action } from "./action/route";
 import { DELETE as removeDemo, POST as loadDemo } from "./demo/route";
+import { GET as exportCase } from "./export/[id]/route";
 import { GET as file } from "./files/[id]/route";
 import { GET as state } from "./state/route";
 import { POST as upload } from "./upload/route";
@@ -62,6 +63,49 @@ describe("API", () => {
     expect(c.events[0].files).toHaveLength(1);
     expect(c.drafts[0].sentAt).toBe("2026-11-16");
     expect((await upload(form("sendDraft", { caseId: 1, draftId: draft.id, event: { date: "2026-11-17" } }))).status).toBe(400);
+  });
+
+  it("keeps a file shared by a linked letter until its last copy goes", async () => {
+    await action(json({ op: "createCase", args: { title: "A", category: "documents" } }));
+    await action(json({ op: "createCase", args: { title: "B", category: "defect" } }));
+    const pdf = new File([Buffer.from(samplePdf("Odpowiedz"))], "odp.pdf", { type: "application/pdf" });
+    await upload(form("addEvent", { caseId: 1, event: { date: "2026-09-17", kind: "response", reference: "OS/4491/TM" } }, [pdf]));
+    let db = (await getState()).db;
+    const ev = db.cases[0].events[0];
+    expect((await action(json({ op: "shareEvent", args: { caseId: 1, eventId: ev.id, otherCaseId: 2 } }))).status).toBe(200);
+    db = (await getState()).db;
+    const copy = db.cases[1].events[0];
+    expect(copy.files[0].id).toBe(ev.files[0].id);
+    expect(db.cases[1].related).toEqual([1]);
+
+    const fileOk = async () => (await file(new Request(`${ORIGIN}/api/files/x`), { params: Promise.resolve({ id: ev.files[0].id }) })).status;
+    await action(json({ op: "deleteEvent", args: { caseId: 1, eventId: ev.id } }));
+    expect(await fileOk()).toBe(200); // still used by case B
+    await action(json({ op: "deleteCase", args: { caseId: 2 } }));
+    expect(await fileOk()).toBe(404);
+  });
+
+  it("saves people and exports a case", async () => {
+    const res = await action(json({ op: "savePerson", args: { name: "Anna Nowak", role: "member" } }));
+    const { result: person } = (await res.json()) as { result: { id: string } };
+    await action(json({ op: "createCase", args: { title: "Dokumenty <b>", category: "documents" } }));
+    await upload(form("addEvent", { caseId: 1, event: { date: "2026-08-13", kind: "letter", senderId: person.id, replyDeadline: { days: 14, basis: "manual" } } }));
+    expect((await getState()).db.cases[0].events[0].senderId).toBe(person.id);
+
+    const page = await exportCase(new Request(`${ORIGIN}/api/export/1`), { params: Promise.resolve({ id: "1" }) });
+    expect(page.headers.get("Content-Type")).toContain("text/html");
+    expect(page.headers.get("Content-Security-Policy")).toContain("default-src 'none'");
+    const html = await page.text();
+    expect(html).toContain("Dokumenty &lt;b&gt;");
+    expect(html).toContain("Anna Nowak (członek spółdzielni)");
+    const md = await exportCase(new Request(`${ORIGIN}/api/export/1?format=md`), { params: Promise.resolve({ id: "1" }) });
+    expect(md.headers.get("Content-Disposition")).toContain("attachment");
+    expect(await md.text()).toContain("## Chronologia");
+    expect((await exportCase(new Request(`${ORIGIN}/api/export/x`), { params: Promise.resolve({ id: "x" }) })).status).toBe(400);
+    expect((await exportCase(new Request(`${ORIGIN}/api/export/9`), { params: Promise.resolve({ id: "9" }) })).status).toBe(404);
+
+    await action(json({ op: "deletePerson", args: { id: person.id } }));
+    expect((await getState()).db.people).toEqual([]);
   });
 
   it("answers 204 while nothing changed", async () => {

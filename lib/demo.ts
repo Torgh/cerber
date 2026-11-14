@@ -238,7 +238,10 @@ export function removeDemo(db: Db): FileRef[] {
   const files: FileRef[] = [];
   for (const c of db.cases.filter((x) => x.demo)) for (const e of c.events) files.push(...e.files);
   for (const r of db.rules.filter((x) => x.demo)) if (r.file) files.push(r.file);
+  const gone = new Set(db.cases.filter((c) => c.demo).map((c) => c.id));
   db.cases = db.cases.filter((c) => !c.demo);
+  for (const c of db.cases) if (c.related?.some((id) => gone.has(id))) c.related = c.related.filter((id) => !gone.has(id)).length ? c.related.filter((id) => !gone.has(id)) : undefined;
+  for (const p of db.people.filter((x) => x.demo)) ops.deletePerson(db, p.id);
   const removed = new Set(db.rules.filter((r) => r.demo).map((r) => r.id));
   db.rules = db.rules.filter((r) => !r.demo);
   for (const r of db.rules) if (r.supersededBy && removed.has(r.supersededBy)) r.supersededBy = undefined;

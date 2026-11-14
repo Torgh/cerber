@@ -1,6 +1,6 @@
 /** What needs attention in a case: overdue answers, deadlines coming up, missing deadlines, unread replies. */
 import { daysBetween } from "./dates";
-import type { Analysis, Case, Deadline, Draft } from "./types";
+import { SIGNER_LABEL, type Analysis, type Case, type Deadline, type Draft } from "./types";
 
 /** "Coming up" means within this many days. */
 export const SOON_DAYS = 7;
@@ -50,6 +50,23 @@ export function answeredShare(a?: Analysis): { share: number; answered: number; 
   };
 }
 
+/** How often a promise was moved, and how often only after its date had passed (broken). */
+export function promiseMoves(d: Deadline): { moved: number; broken: number; dates: string[] } {
+  const h = d.history ?? [];
+  return { moved: h.length, broken: h.filter((m) => m.movedOn > m.due).length, dates: [...h.map((m) => m.due), d.due] };
+}
+
+/** Formal shortcomings of a reply, from its analysis: signed outside the organs, no appeal instruction, no reasons. */
+export function formalIssues(a?: Analysis): string[] {
+  const f = a?.formal;
+  if (!f) return [];
+  const out: string[] = [];
+  if (f.signer === "admin" || f.signer === "other") out.push(`podpisane przez: ${f.signedBy ?? SIGNER_LABEL[f.signer]} – nie organ spółdzielni`);
+  if (f.appealInstruction === false) out.push("brak pouczenia o odwołaniu");
+  if (f.justification === false) out.push("brak uzasadnienia");
+  return out;
+}
+
 export function isIncomplete(a?: Analysis): boolean {
   const s = answeredShare(a);
   return !!s && s.share < COMPLETE_SHARE;
@@ -62,9 +79,11 @@ export interface DeadlineState {
   state: "done" | "dropped" | "late" | "soon" | "open";
   /** Met only formally: the reply that met it leaves most of my letter unanswered. */
   incomplete?: boolean;
+  /** Received after the deadline, but the letter itself is dated within it. */
+  datedInTime?: string;
 }
 
-/** Pass the case to find out whether the reply that met a deadline was incomplete. */
+/** Pass the case to find out whether the reply that met a deadline was incomplete or dated in time. */
 export function deadlineState(d: Deadline, today: string, c?: Case): DeadlineState {
   const left = daysBetween(today, d.due);
   if (d.dropped) return { deadline: d, left, state: "dropped" };
@@ -72,6 +91,7 @@ export function deadlineState(d: Deadline, today: string, c?: Case): DeadlineSta
     const by = d.doneEventId ? c?.events.find((e) => e.id === d.doneEventId) : undefined;
     const s: DeadlineState = { deadline: d, left: daysBetween(d.doneAt, d.due), state: "done" };
     if (d.type === "reply" && isIncomplete(by?.analysis)) s.incomplete = true;
+    if (s.left < 0 && by?.letterDate && by.letterDate <= d.due) s.datedInTime = by.letterDate;
     return s;
   }
   if (left < 0) return { deadline: d, left, state: "late" };

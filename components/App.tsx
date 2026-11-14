@@ -6,8 +6,9 @@ import { demo, loadState } from "./api";
 import CaseList from "./CaseList";
 import CaseView from "./CaseView";
 import { CaseForm } from "./forms";
-import { Auto, Book, List, Moon, Sun } from "./icons";
+import { Auto, Book, Chart, List, Moon, Sun } from "./icons";
 import RulesView from "./RulesView";
+import StatsView from "./StatsView";
 import { useTheme } from "./useTheme";
 
 export interface AppState {
@@ -26,7 +27,7 @@ const THEME_LABEL = { system: "Motyw: jak w systemie", light: "Motyw: jasny", da
 export default function App() {
   const [state, setState] = useState<{ db: Db; today: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"cases" | "rules">("cases");
+  const [tab, setTab] = useState<"cases" | "rules" | "stats">("cases");
   const [selected, setSelected] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [demoBusy, setDemoBusy] = useState(false);
@@ -118,6 +119,9 @@ export default function App() {
         <button className="rail-btn" aria-label="Regulaminy" title="Regulaminy" aria-current={tab === "rules" ? "page" : undefined} onClick={() => setTab("rules")}>
           <Book />
         </button>
+        <button className="rail-btn" aria-label="Zestawienie i osoby" title="Zestawienie i osoby" aria-current={tab === "stats" ? "page" : undefined} onClick={() => setTab("stats")}>
+          <Chart />
+        </button>
         <span className="spacer" />
         <button className="rail-btn" aria-label={THEME_LABEL[theme]} title={THEME_LABEL[theme]} onClick={cycleTheme}>
           {theme === "light" ? <Sun /> : theme === "dark" ? <Moon /> : <Auto />}
@@ -158,9 +162,7 @@ export default function App() {
           </section>
         </div>
       ) : (
-        <div className="main single">
-          <RulesView app={app} />
-        </div>
+        <div className="main single">{tab === "rules" ? <RulesView app={app} /> : <StatsView app={app} />}</div>
       )}
       {creating && (
         <CaseForm
