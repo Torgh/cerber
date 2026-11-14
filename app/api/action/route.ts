@@ -8,30 +8,49 @@ import type { Db, FileRef } from "@/lib/types";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
- * Changes without files, as { op, args }. The ops are the same ones the MCP server uses. A Map, so
- * only these names resolve – never something inherited such as "constructor".
+ * Changes without files, as { op, args }. The ops are the same ones the MCP server uses. A switch,
+ * not a lookup by name, so a request can never reach anything but these operations.
  */
-const ACTIONS = new Map<string, (db: any, a: any) => unknown>(
-  Object.entries({
-  createCase: (db, a) => ops.createCase(db, a),
-  updateCase: (db, a) => ops.updateCase(db, a.caseId, a.patch),
-  deleteCase: (db, a) => ops.deleteCase(db, a.caseId),
-  linkCases: (db, a) => ops.linkCases(db, a.caseId, a.otherCaseId, a.unlink),
-  updateEvent: (db, a) => ops.updateEvent(db, a.caseId, a.eventId, a.patch),
-  deleteEvent: (db, a) => ops.deleteEvent(db, a.caseId, a.eventId),
-  shareEvent: (db, a) => ops.shareEvent(db, a.caseId, a.eventId, a.otherCaseId, a.replyDeadline),
-  linkEvents: (db, a) => ops.linkEvents(db, a.caseId, a.eventId, a.otherCaseId, a.otherEventId),
-  removeFile: (db, a) => ops.removeFile(db, a.caseId, a.eventId, a.fileId),
-  addDeadline: (db, a) => ops.addDeadline(db, a.caseId, a.deadline, today()),
-  updateDeadline: (db, a) => ops.updateDeadline(db, a.caseId, a.deadlineId, a.patch),
-  deleteDeadline: (db, a) => ops.deleteDeadline(db, a.caseId, a.deadlineId),
-  deleteDraft: (db, a) => ops.deleteDraft(db, a.caseId, a.draftId),
-  deleteRules: (db, a) => ops.deleteRules(db, a.id),
-  setDeadlineRule: (db, a) => ops.setDeadlineRule(db, a.category, a.days, a.source),
-  savePerson: (db, a) => ops.savePerson(db, a),
-  deletePerson: (db, a) => ops.deletePerson(db, a.id),
-  } satisfies Record<string, (db: any, a: any) => unknown>),
-);
+function run(db: Db, op: unknown, a: any): unknown {
+  switch (op) {
+    case "createCase":
+      return ops.createCase(db, a);
+    case "updateCase":
+      return ops.updateCase(db, a.caseId, a.patch);
+    case "deleteCase":
+      return ops.deleteCase(db, a.caseId);
+    case "linkCases":
+      return ops.linkCases(db, a.caseId, a.otherCaseId, a.unlink);
+    case "updateEvent":
+      return ops.updateEvent(db, a.caseId, a.eventId, a.patch);
+    case "deleteEvent":
+      return ops.deleteEvent(db, a.caseId, a.eventId);
+    case "shareEvent":
+      return ops.shareEvent(db, a.caseId, a.eventId, a.otherCaseId, a.replyDeadline);
+    case "linkEvents":
+      return ops.linkEvents(db, a.caseId, a.eventId, a.otherCaseId, a.otherEventId);
+    case "removeFile":
+      return ops.removeFile(db, a.caseId, a.eventId, a.fileId);
+    case "addDeadline":
+      return ops.addDeadline(db, a.caseId, a.deadline, today());
+    case "updateDeadline":
+      return ops.updateDeadline(db, a.caseId, a.deadlineId, a.patch);
+    case "deleteDeadline":
+      return ops.deleteDeadline(db, a.caseId, a.deadlineId);
+    case "deleteDraft":
+      return ops.deleteDraft(db, a.caseId, a.draftId);
+    case "deleteRules":
+      return ops.deleteRules(db, a.id);
+    case "setDeadlineRule":
+      return ops.setDeadlineRule(db, a.category, a.days, a.source);
+    case "savePerson":
+      return ops.savePerson(db, a);
+    case "deletePerson":
+      return ops.deletePerson(db, a.id);
+    default:
+      throw new ops.OpError(`Nieznana operacja ${typeof op === "string" ? op : typeof op}.`);
+  }
+}
 
 /** Files the operation took out of the data (a linked letter may still use them elsewhere). */
 function released(op: string, result: any): FileRef[] {
@@ -53,12 +72,11 @@ function released(op: string, result: any): FileRef[] {
 export async function POST(req: Request) {
   return handle(async () => {
     checkOrigin(req);
-    const { op, args } = (await req.json()) as { op: string; args: any };
-    const fn = typeof op === "string" ? ACTIONS.get(op) : undefined;
-    if (!fn) throw new ops.OpError(`Nieznana operacja ${String(op)}.`);
+    const { op, args } = (await req.json()) as { op: unknown; args: any };
+    // An unknown operation throws inside mutate, before anything is written.
     const { result, gone } = await mutate((db: Db) => {
-      const result = fn(db, args ?? {});
-      return { result, gone: ops.unreferenced(db, released(op, result)) };
+      const result = run(db, op, args ?? {});
+      return { result, gone: ops.unreferenced(db, released(String(op), result)) };
     });
     for (const f of gone) await deleteStored(f);
     return { ok: true, result };
